@@ -1,0 +1,8 @@
+//
+// Created by Jesson on 2024/9/28.
+//
+
+#ifndef SINGLE_PRODUCER_SEQUENCER_H
+#define SINGLE_PRODUCER_SEQUENCER_H
+
+#endif //SINGLE_PRODUCER_SEQUENCER_H
