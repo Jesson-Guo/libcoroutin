@@ -5,9 +5,9 @@
 #ifndef STATIC_THREAD_POOL_H
 #define STATIC_THREAD_POOL_H
 
-#include "../auto_reset_event.h"
-#include "../spin_mutex.h"
-#include "../spin_wait.h"
+#include "auto_reset_event.h"
+#include "spin_mutex.h"
+#include "spin_wait.h"
 
 #include <atomic>
 #include <cassert>
@@ -186,8 +186,7 @@ private:
     };
 
 public:
-    thread_pool()
-        : thread_pool(std::thread::hardware_concurrency()) {}
+    thread_pool() : thread_pool(std::thread::hardware_concurrency()) {}
 
     explicit thread_pool(std::uint32_t thread_count)
         : m_thread_count(thread_count > 0 ? thread_count : 1)
@@ -222,7 +221,9 @@ public:
 
     class schedule_operation {
     public:
-        schedule_operation(thread_pool* pool) noexcept : m_thread_pool(pool) {}
+        schedule_operation(thread_pool* pool, std::function<void()> func = nullptr) noexcept
+            : m_thread_pool(pool)
+            , m_func(std::move(func)) {}
 
         bool await_ready() noexcept {
             return false;
@@ -235,13 +236,30 @@ public:
 
         void await_resume() noexcept {}
 
+        void execute() {
+            if (m_func) {
+                // 执行函数任务
+                m_func();
+            }
+            else {
+                // 恢复协程
+                m_awaiting_handle.resume();
+            }
+        }
+
     private:
         friend class thread_pool;
 
         thread_pool* m_thread_pool;
         std::coroutine_handle<> m_awaiting_handle;
         schedule_operation* m_next;
+        std::function<void()> m_func;
     };
+
+    void schedule(std::function<void()> func) noexcept {
+        auto op = std::make_unique<schedule_operation>(this, std::move(func));
+        schedule_impl(std::move(op).get()); // 将所有权转移给 schedule_impl
+    }
 
 private:
     static thread_local thread_state* s_cur_state;
@@ -304,7 +322,10 @@ private:
             if (op) {
                 m_queued_work_count.fetch_sub(1, std::memory_order_relaxed);
                 try_clear_intent_to_sleep(thread_id);
-                op->m_awaiting_handle.resume();
+                {
+                    // op 离开作用域后会自动销毁
+                    op->execute();
+                }
                 spinner.reset();
             }
             else {

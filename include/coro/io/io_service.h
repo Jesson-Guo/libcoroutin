@@ -1,6 +1,7 @@
 #ifndef IO_SERVICE_H
 #define IO_SERVICE_H
 
+#include "../operation_cancelled.h"
 #include "../on_scope_exit.h"
 #include "../cancellation/cancellation_token.h"
 #include "../cancellation/cancellation_registration.h"
@@ -17,10 +18,6 @@
 #include <utility>
 #include <vector>
 
-typedef int DWORD;
-#define INFINITE ((DWORD)-1) // 用于在 timer_thread_state::run() 中设置超时值
-typedef long long int LONGLONG;
-
 namespace coro {
 
 class io_service {
@@ -36,17 +33,14 @@ public:
     /// 指定正在积极处理事件的 I/O 线程的目标最大数量。
     /// 注意，活动线程的数量可能会暂时超过此数量。
     explicit io_service(const size_t queue_length)
-        : m_mq(new detail::macos::message_queue(queue_length))
-        , m_thread_state(0)
+        : m_thread_state(0)
         , m_work_count(0)
-        , m_schedule_operations(nullptr)
-        , m_timer_state(nullptr) {}
+        , m_uq(std::max(queue_length, static_cast<size_t>(10)))
+        , m_schedule_operations(nullptr) {}
 
     ~io_service() {
         assert(m_schedule_operations.load(std::memory_order_relaxed) == nullptr);
         assert(m_thread_state.load(std::memory_order_relaxed) < active_thread_count_increment);
-        delete m_timer_state.load(std::memory_order_relaxed);
-        delete m_mq;
     }
 
     io_service(io_service&& other) = delete;
@@ -151,8 +145,9 @@ public:
         }
     }
 
+    detail::macos::io_queue& io_queue() noexcept { return m_uq; }
+
 private:
-    class timer_thread_state;
     class timer_queue;
 
     friend class schedule_operation;
@@ -183,8 +178,8 @@ private:
     /// 处理单个事件，并根据传入的参数决定是否等待事件的到来。
     ///
     /// \param wait_for_event
-    /// true:  表示调用 dequeue_message 时，如果队列中没有事件，应该阻塞等待直到有事件到达。
-    /// false: 表示 dequeue_message 立即返回，如果没有事件可处理则返回 false。
+    /// true:  表示调用 dequeue 时，如果队列中没有事件，应该阻塞等待直到有事件到达。
+    /// false: 表示 dequeue 立即返回，如果没有事件可处理则返回 false。
     bool try_process_one_event(const bool wait_for_event) {
         if (is_stop_requested()) {
             return false;
@@ -192,26 +187,28 @@ private:
 
         while (true) {
             try_reschedule_overflow_operations();
-            // 指向消息的指针，通常是一个协程句柄地址或 I/O 操作的状态对象
-            void* message = nullptr;
-            detail::macos::message_type type = detail::macos::RESUME_TYPE;
+            detail::macos::io_message* message = nullptr;
 
-            // 调用 dequeue_message 从 m_mq 中取出一个消息（或事件）
-            if (const bool status = m_mq->dequeue_message(message, type, wait_for_event);
-                !status) {
+            // 调用 dequeue 取出一个消息（或事件）
+            bool status;
+            try {
+                status = m_uq.dequeue(message, wait_for_event);
+            }
+            catch (std::system_error& err) {
+                if (err.code() == std::errc::interrupted &&
+                    (m_thread_state.load(std::memory_order_relaxed) & stop_requested_flag) == 0) {
+                    return false;
+                }
+                throw;
+            }
+
+            if (!status) {
                 return false;
             }
 
-            // I/O 回调事件
-            if (type == detail::macos::CALLBACK_TYPE) {
-                auto* state = static_cast<detail::macos::io_state*>(message);
-                state->m_callback(state);
-                return true;
-            }
-
             // 恢复协程事件
-            if (reinterpret_cast<uintptr_t>(message) != 0) {
-                std::coroutine_handle<>::from_address(message).resume();
+            if (message && message->handle) {
+                message->handle.resume();
                 return true;
             }
 
@@ -222,26 +219,25 @@ private:
     }
 
     /// 唤醒可能处于阻塞状态的 I/O 线程，使其能够及时地重新进入事件循环，处理队列中的待处理任务或溢出的操作。
-    void post_wake_up_event() const noexcept {
+    void post_wake_up_event() noexcept {
         // 向消息队列中加入一个特殊的唤醒事件，唤醒阻塞在 kevent 上的线程。
-        (void)m_mq->enqueue_message(nullptr, detail::macos::RESUME_TYPE);
+        static detail::macos::io_message nop;
+        m_uq.transaction(nop).nop().commit();
     }
-
-    timer_thread_state* ensure_timer_thread_started();
 
     static constexpr std::uint32_t stop_requested_flag = 1;
     static constexpr std::uint32_t active_thread_count_increment = 2;
-
-    detail::macos::message_queue* m_mq;
 
     // 位 0: stop_requested_flag
     // 位 1-31: 当前正在运行事件循环的活动线程数
     std::atomic<std::uint32_t> m_thread_state;
     std::atomic<std::uint32_t> m_work_count;
 
+    detail::macos::io_queue m_uq;
+    detail::macos::io_message m_nopMessage{};
+
     // 准备运行但未能加入消息队列的调度操作的链表头
     std::atomic<schedule_operation*> m_schedule_operations;
-    std::atomic<timer_thread_state*> m_timer_state;
 };
 
 class io_service::schedule_operation {
@@ -266,6 +262,7 @@ private:
     io_service& m_service;
     std::coroutine_handle<> m_awaiter;
     schedule_operation* m_next;
+    detail::macos::io_message m_message{};
 };
 
 class io_service::timed_schedule_operation {
@@ -277,7 +274,11 @@ public:
         , m_resume_time(resume_time)
         , m_cancellation_token(std::move(token))
         , m_next(nullptr)
-        , m_ref_count(2) {}
+        , m_ref_count(2) {
+        m_cancellation_registration.emplace(std::move(m_cancellation_token), [&service, this] {
+            service.io_queue().transaction(m_message).timeout_remove().commit();
+        });
+    }
 
     timed_schedule_operation(timed_schedule_operation&& other) noexcept
         : m_schedule_operation(other.m_schedule_operation)
@@ -303,11 +304,20 @@ public:
         // 清理 m_cancellation_registration，即取消注册之前的取消处理函数。
         m_cancellation_registration.reset();
         m_cancellation_token.throw_if_cancellation_requested();
+        if (m_message.result == -ETIME) {}
+        else if (m_message.result == -ECANCELED) {
+            throw operation_cancelled{};
+        }
+        else if (m_message.result < 0) {
+            throw std::system_error {
+                -m_message.result,
+                std::generic_category()
+            };
+        }
     }
 
 private:
     friend class timer_queue;
-    friend class timer_thread_state;
 
     schedule_operation m_schedule_operation;
     time_point m_resume_time;
@@ -315,6 +325,7 @@ private:
     std::optional<cancellation_registration> m_cancellation_registration;
     timed_schedule_operation* m_next;
     std::atomic<std::uint32_t> m_ref_count;
+    detail::macos::io_message m_message{};
 };
 
 class io_work_scope {
@@ -373,7 +384,7 @@ public:
         return m_timer_entries.empty() && m_overflow_timers == nullptr;
     }
 
-    [[nodiscard]] time_point earliest_due_time() const noexcept {
+    time_point earliest_due_time() const noexcept {
         if (!m_timer_entries.empty()) {
             if (m_overflow_timers) {
                 return std::min(m_timer_entries.front().m_due_time, m_overflow_timers->m_resume_time);
@@ -411,7 +422,7 @@ public:
 
             // 将任务加入到准备执行的链表中
             timer->m_next = timer_list;
-            timer_list    = timer;
+            timer_list = timer;
         }
 
         // 处理链表中的到期任务
@@ -486,141 +497,6 @@ private:
     timed_schedule_operation* m_overflow_timers;
 };
 
-class coro::io_service::timer_thread_state {
-public:
-    timer_thread_state()
-        : m_kqueue_fd(detail::macos::create_kqueue_fd())
-        , m_newly_queued_timers(nullptr)
-        , m_timer_cancellation_requested(false)
-        , m_shutdown_requested(false)
-        , m_thread([this] { this->run(); }) {
-        // 注册唤醒事件
-        struct kevent kev{};
-        EV_SET(&kev, 1, EVFILT_USER, EV_ADD | EV_CLEAR, 0, 0, nullptr);
-        if (kevent(m_kqueue_fd.fd(), &kev, 1, nullptr, 0, nullptr) == -1) {
-            throw std::system_error{errno, std::system_category(), "Error registering wakeup event with kqueue"};
-        }
-    }
-
-    ~timer_thread_state() {
-        m_shutdown_requested.store(true, std::memory_order_release);
-        wake_up_timer_thread();
-        m_thread.join();
-    }
-
-    timer_thread_state(const timer_thread_state& other) = delete;
-    timer_thread_state& operator=(const timer_thread_state& other) = delete;
-
-    void request_timer_cancellation() noexcept {
-        // 检查当前是否已有取消请求
-        const bool timer_cancellation_already_requested =
-            m_timer_cancellation_requested.exchange(true, std::memory_order_release);
-
-        // 如果之前没有请求过取消，则唤醒定时器线程
-        if (!timer_cancellation_already_requested) {
-            wake_up_timer_thread();
-        }
-    }
-
-    void run() {
-        using clock = std::chrono::high_resolution_clock;
-        using time_point = clock::time_point;
-
-        timer_queue timer_queue;
-        timed_schedule_operation* timers_ready_to_resume = nullptr;
-
-        while (!m_shutdown_requested.load(std::memory_order_relaxed)) {
-            struct kevent event{};
-            timespec timeout_spec{};
-            timespec* p_timeout = nullptr;
-
-            // 设置超时时间：如果定时器队列不为空，设置超时时间为最早任务的到期时间
-            if (!timer_queue.is_empty()) {
-                time_point current_time = clock::now();
-                if (auto earliest_due_time = timer_queue.earliest_due_time();
-                    earliest_due_time <= current_time) {
-                    // 立即处理到期的任务
-                    timeout_spec.tv_sec = 0;
-                    timeout_spec.tv_nsec = 0;
-                }
-                else {
-                    // 设置等待时间，直到最早任务到期
-                    auto duration = earliest_due_time - current_time;
-                    timeout_spec.tv_sec = std::chrono::duration_cast<std::chrono::seconds>(duration).count();
-                    timeout_spec.tv_nsec = std::chrono::duration_cast<std::chrono::nanoseconds>(duration).count() % 1000000000;
-                }
-                p_timeout = &timeout_spec;
-            }
-
-            // 调用 kevent()，等待事件发生或定时器超时
-            const int nev = kevent(m_kqueue_fd.fd(), nullptr, 0, &event, 1, p_timeout);
-            if (nev == -1) {
-                // 中断
-                if (errno == EINTR) {
-                    continue;
-                }
-                // 处理错误
-                throw std::system_error{errno, std::system_category(), "Error in timer thread: kevent wait"};
-            }
-            if (nev == 0) {
-                // 超时，处理到期的计时器
-                if (!timer_queue.is_empty()) {
-                    time_point current_time = clock::now();
-                    timer_queue.dequeue_due_timers(current_time, timers_ready_to_resume);
-                }
-            }
-            else {
-                if (event.filter == EVFILT_USER) {
-                    // 处理已取消的计时器
-                    if (m_timer_cancellation_requested.exchange(false, std::memory_order_acquire)) {
-                        timer_queue.remove_cancelled_timers(timers_ready_to_resume);
-                    }
-
-                    // 处理新加入的计时器
-                    auto* new_timers = m_newly_queued_timers.exchange(nullptr, std::memory_order_acquire);
-                    while (new_timers) {
-                        auto* timer = new_timers;
-                        new_timers = timer->m_next;
-                        if (timer->m_cancellation_token.is_cancellation_requested()) {
-                            // 如果新加入的任务已被取消，直接将其加入到准备恢复的队列
-                            timer->m_next = timers_ready_to_resume;
-                            timers_ready_to_resume = timer;
-                        }
-                        else {
-                            // 否则，将其加入到定时器队列中
-                            timer_queue.enqueue_timer(timer);
-                        }
-                    }
-                }
-            }
-
-            // 恢复任何准备运行的定时器任务
-            while (timers_ready_to_resume) {
-                auto* timer = timers_ready_to_resume;
-                timers_ready_to_resume = timer->m_next;
-
-                if (timer->m_ref_count.fetch_sub(1, std::memory_order_release) == 1) {
-                    // 恢复协程执行
-                    timer->m_schedule_operation.m_service.schedule_impl(&timer->m_schedule_operation);
-                }
-            }
-        }
-    }
-
-    void wake_up_timer_thread() const noexcept {
-        struct kevent kev{};
-        EV_SET(&kev, 1, EVFILT_USER, 0, NOTE_TRIGGER, 0, nullptr);
-        kevent(m_kqueue_fd.fd(), &kev, 1, nullptr, 0, nullptr);
-    }
-
-    detail::macos::safe_fd m_kqueue_fd;
-
-    std::atomic<timed_schedule_operation*> m_newly_queued_timers;
-    std::atomic<bool> m_timer_cancellation_requested;
-    std::atomic<bool> m_shutdown_requested;
-    std::thread m_thread;
-};
-
 inline coro::io_service::schedule_operation coro::io_service::schedule() noexcept {
     return schedule_operation{*this};
 }
@@ -637,8 +513,10 @@ coro::io_service::timed_schedule_operation coro::io_service::schedule_after(
 
 inline void coro::io_service::schedule_impl(schedule_operation* operation) noexcept {
     // 尝试将调度操作加入消息队列
-    if (const bool ok = m_mq->enqueue_message(operation->m_awaiter.address(), detail::macos::RESUME_TYPE);
-        !ok) {
+    operation->m_message.handle = operation->m_awaiter;
+    operation->m_message.type = detail::macos::RESUME_TYPE;
+    bool ok = m_uq.transaction(operation->m_message).nop().commit();
+    if (!ok) {
         // 无法发送到消息队列
         // 这很可能是因为队列当前已满
         // 我们将操作加入到一个无锁的链表中，并推迟调度到消息队列，直到某个 I/O 线程下次进入其事件循环
@@ -658,8 +536,10 @@ inline void coro::io_service::try_reschedule_overflow_operations() noexcept {
     // 循环遍历溢出操作链表，尝试将每一个 schedule_operation 加入消息队列。
     while (operation) {
         auto* next = operation->m_next;
-        if (const bool ok = m_mq->enqueue_message(operation->m_awaiter.address(), detail::macos::RESUME_TYPE);
-            !ok) {
+        operation->m_message.handle = operation->m_awaiter;
+        operation->m_message.type = detail::macos::RESUME_TYPE;
+        bool ok = m_uq.transaction(operation->m_message).nop().commit();
+        if (!ok) {
             // 仍然无法将这些操作加入队列，将它们放回溢出操作列表中
             auto* tail = operation;
             while (tail->m_next) {
@@ -684,53 +564,10 @@ inline void coro::io_service::timed_schedule_operation::await_suspend(std::corou
 
     auto& service = m_schedule_operation.m_service;
 
-    // 确保计时器状态已初始化并启动计时器线程
-    auto* timer_state = service.ensure_timer_thread_started();
-
-    if (m_cancellation_token.can_be_cancelled()) {
-        // 注册取消处理函数
-        m_cancellation_registration.emplace(m_cancellation_token, [timer_state] {
-            // 该函数用于通知定时器线程：有定时任务被取消了，需要从定时器队列中移除这些任务。
-            timer_state->request_timer_cancellation();
-        });
-    }
-=
-    // 将计时器调度加入到新计时器的队列中
-    auto* prev = timer_state->m_newly_queued_timers.load(std::memory_order_acquire);
-    do {
-        m_next = prev;
-    } while (!timer_state->m_newly_queued_timers.compare_exchange_weak(
-        prev,
-        this,
-        std::memory_order_release,
-        std::memory_order_acquire));
-
-    // 唤醒定时器线程
-    if (!prev) {
-        timer_state->wake_up_timer_thread();
-    }
-
     // 如果引用计数减少为1，表示可以调度任务了
     if (m_ref_count.fetch_sub(1, std::memory_order_acquire) == 1) {
         service.schedule_impl(&m_schedule_operation);
     }
-}
-
-inline coro::io_service::timer_thread_state* coro::io_service::ensure_timer_thread_started() {
-    auto* timer_state = m_timer_state.load(std::memory_order_acquire);
-    if (!timer_state) {
-        auto new_timer_state = std::make_unique<timer_thread_state>();
-        if (m_timer_state.compare_exchange_strong(
-            timer_state,
-            new_timer_state.get(),
-            std::memory_order_release,
-            std::memory_order_acquire)) {
-            // 成功设置 timer_thread_state，其他线程不会覆盖
-            // 不在这里释放，之后会在 io_service 析构时释放
-            timer_state = new_timer_state.release();
-        }
-    }
-    return timer_state;
 }
 
 #endif // IO_SERVICE_H

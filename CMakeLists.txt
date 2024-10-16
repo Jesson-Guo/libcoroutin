@@ -17,16 +17,15 @@ add_executable(libcoroutine main.cpp
         include/coro/awaitable/async_auto_reset_event.h
         include/coro/awaitable/single_consumer_async_auto_reset_event.h
         include/coro/awaitable/async_latch.h
-        include/coro/awaitable/sequence_barrier.h
         include/coro/sequence_traits.h
         include/coro/detail/any.h
         include/coro/detail/is_awaiter.h
         include/coro/detail/get_awaiter.h
         include/coro/detail/manual_lifetime.h
         include/coro/awaitable_traits.h
-        include/coro/io/thread_pool.h
-        include/coro/io/thread_pool.h
-        include/coro/io/thread_pool.h
+        include/coro/thread_pool.h
+        include/coro/thread_pool.h
+        include/coro/thread_pool.h
         include/coro/spin_wait.h
         include/coro/spin_mutex.h
         include/coro/auto_reset_event.h
@@ -38,6 +37,34 @@ add_executable(libcoroutine main.cpp
         include/coro/cancellation/cancellation_source.h
         include/coro/cancellation/cancellation_registration.h
         include/coro/io/io_service.h
-        include/coro/detail/linux.h
         include/coro/detail/macos.h
+        include/coro/io/file_open_mode.h
+        include/coro/io/file_share_mode.h
+        include/coro/io/file_buffering_mode.h
+        include/coro/io/file_read_operation.h
+        include/coro/net/ip_address.h
+        include/coro/net/ipv4_address.h
+        include/coro/net/ipv6_address.h
+        include/coro/net/ipv4_endpoint.h
+        include/coro/net/ipv6_endpoint.h
+        include/coro/net/ip_endpoint.h
+        include/coro/net/socket_helpers.h
+        include/coro/net/socket.h
+        include/coro/net/socket_accept_operation.h
+        include/coro/detail/macos_io_operation.h
+        include/coro/operation_cancelled.h
+        include/coro/net/socket_connect_operation.h
+        include/coro/net/socket_disconnect_operation.h
+        include/coro/net/socket_recv_from_operation.h
+        include/coro/net/socket_recv_operation.h
+        include/coro/net/socket_send_operation.h
+        include/coro/net/socket_send_to_operation.h
+        include/coro/io/file_write_operation.h
+        include/coro/io/read_only_file.h
+        include/coro/io/readable_file.h
+        include/coro/io/writable_file.h
+        include/coro/io/write_only_file.h
+        include/coro/io/read_write_file.h
+        include/coro/sequence_range.h
+        include/coro/sequence_barrier.h
 )
