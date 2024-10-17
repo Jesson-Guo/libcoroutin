@@ -13,9 +13,7 @@ namespace coro {
 
 class readable_file : virtual public file {
 public:
-    [[nodiscard]] file_read_operation read(std::uint64_t offset, void* buffer, std::size_t byte_count) const noexcept {
-        return file_read_operation{*m_io_service, m_file_handle.fd(), offset, buffer, byte_count};
-    }
+    [[nodiscard]] file_read_operation read(std::uint64_t offset, void* buffer, std::size_t byte_count) const noexcept;
 
     /// Read some data from the file.
     ///
@@ -46,11 +44,7 @@ public:
     /// An object that represents the read-operation.
     /// This object must be co_await'ed to start the read operation.
     [[nodiscard]] file_read_operation_cancellable read(
-        std::uint64_t offset, void* buffer, std::size_t byte_count, cancellation_token ct) const noexcept {
-        return file_read_operation_cancellable{
-            *m_io_service, m_file_handle.fd(), offset, buffer, byte_count, std::move(ct)
-        };
-    }
+        std::uint64_t offset, void* buffer, std::size_t byte_count, cancellation_token ct) const noexcept;
 
 protected:
     using file::file;

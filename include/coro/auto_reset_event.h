@@ -13,24 +13,9 @@ namespace coro {
 class auto_reset_event {
 public:
     explicit auto_reset_event(const bool is_set=false) noexcept : m_is_set(is_set) {}
-
     ~auto_reset_event() = default;
-
-    auto set() noexcept -> void {
-        std::unique_lock lock(m_mutex);
-        if (!m_is_set) {
-            m_is_set = true;
-            m_cv.notify_one();
-        }
-    }
-
-    auto wait() noexcept -> void {
-        std::unique_lock lock(m_mutex);
-        while (!m_is_set) {
-            m_cv.wait(lock);
-        }
-        m_is_set = false;
-    }
+    auto set() noexcept -> void;
+    auto wait() noexcept -> void;
 
 private:
     std::mutex m_mutex;

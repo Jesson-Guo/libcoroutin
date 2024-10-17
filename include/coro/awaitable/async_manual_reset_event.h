@@ -29,17 +29,7 @@ public:
         return m_state.load(std::memory_order_acquire) == static_cast<void*>(this);
     }
 
-    auto set() noexcept -> void {
-        void* const old_state = m_state.exchange(this, std::memory_order_acq_rel);
-        if (old_state != static_cast<void*>(this)) {
-            auto* waiter = static_cast<async_manual_reset_event_operation*>(old_state);
-            while (waiter) {
-                auto* next = waiter->m_next;
-                waiter->m_awaiter.resume();
-                waiter = next;
-            }
-        }
-    }
+    auto set() noexcept -> void;
 
     auto reset() noexcept -> void {
         void* expected = this;
@@ -61,46 +51,20 @@ private:
 class async_manual_reset_event_operation {
 public:
     explicit async_manual_reset_event_operation(const async_manual_reset_event& event) noexcept
-        : m_event(event) {}
+        : m_event(event)
+        , m_next(nullptr) {}
 
-    auto await_ready() const noexcept -> bool {
-        return m_event.is_set();
-    }
-
-    auto await_suspend(std::coroutine_handle<> awaiter) noexcept -> bool {
-        m_awaiter = awaiter;
-        void* old_state = m_event.m_state.load(std::memory_order_acquire);
-
-        while (true) {
-            if (old_state != &m_event) {
-                // event is set, no need suspending.
-                return false;
-            }
-            // add to waiting list
-            m_next = static_cast<async_manual_reset_event_operation*>(old_state);
-            if (m_event.m_state.compare_exchange_weak(
-                old_state,
-                this,
-                std::memory_order_release,
-                std::memory_order_acquire)) {
-                return true;
-            }
-        }
-    }
-
+    auto await_ready() const noexcept -> bool;
+    auto await_suspend(std::coroutine_handle<> awaiter) noexcept -> bool;
     auto await_resume() const noexcept -> void {}
 
 private:
     friend class async_manual_reset_event;
 
-    const async_manual_reset_event& m_event;
+    async_manual_reset_event& m_event;
     async_manual_reset_event_operation* m_next;
     std::coroutine_handle<> m_awaiter;
 };
-
-inline async_manual_reset_event_operation async_manual_reset_event::operator co_await() const noexcept {
-    return async_manual_reset_event_operation{ *this };
-}
 
 }
 

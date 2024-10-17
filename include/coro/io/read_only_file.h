@@ -15,11 +15,11 @@
 
 namespace coro {
 
-class read_only_file : public readable_file {
+class read_only_file final : public readable_file {
 public:
     /// Open a file for read-only access.
     ///
-    /// \param ioContext
+    /// \param io_svc
     /// The I/O context to use when dispatching I/O completion events.
     /// When asynchronous read operations on this file complete the
     /// completion events will be dispatched to an I/O thread associated
@@ -28,10 +28,10 @@ public:
     /// \param path
     /// Path of the file to open.
     ///
-    /// \param shareMode
+    /// \param share_mode
     /// Specifies the access to be allowed on the file concurrently with this file access.
     ///
-    /// \param bufferingMode
+    /// \param buffering_mode
     /// Specifies the modes/hints to provide to the OS that affects the behaviour
     /// of its file buffering.
     ///
@@ -44,22 +44,10 @@ public:
         io_service& io_svc,
         const std::filesystem::path& path,
         file_share_mode share_mode = file_share_mode::read,
-        file_buffering_mode buffering_mode = file_buffering_mode::default_) {
-        read_only_file file(file::open(
-            GENERIC_READ,
-            io_svc,
-            path,
-            file_open_mode::open_existing,
-            share_mode,
-            buffering_mode));
-        file.m_io_service = &io_svc;
-        return std::move(file);
-    }
+        file_buffering_mode buffering_mode = file_buffering_mode::default_);
 
 protected:
-    explicit read_only_file(detail::macos::safe_fd&& file_handle) noexcept
-        : file(std::move(file_handle))
-        , readable_file(detail::macos::safe_fd{}) {}
+    explicit read_only_file(detail::macos::safe_fd&& file_handle) noexcept;
 };
 
 }

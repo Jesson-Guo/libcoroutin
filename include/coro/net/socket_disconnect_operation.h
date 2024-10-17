@@ -16,7 +16,7 @@ class socket_disconnect_operation_impl {
 public:
 	explicit socket_disconnect_operation_impl(socket& socket) noexcept : m_socket(socket) {}
 
-	bool try_start(coro::detail::io_operation_base& operation) noexcept;
+	bool try_start(coro::detail::io_operation_base& operation) const noexcept;
 	void cancel(coro::detail::io_operation_base& operation) noexcept;
 	void get_result(coro::detail::io_operation_base& operation);
 
@@ -55,18 +55,6 @@ private:
 	socket_disconnect_operation_impl m_disconnect_op_impl;
 };
 
-}
-
-bool coro::net::socket_disconnect_operation_impl::try_start(coro::detail::io_operation_base& operation) noexcept {
-    return operation.m_io_queue.transaction(operation.m_message).close(m_socket.native_handle()).commit();
-}
-
-void coro::net::socket_disconnect_operation_impl::cancel(coro::detail::io_operation_base& operation) noexcept {
-    operation.m_io_queue.transaction(operation.m_message).cancel().commit();
-}
-
-void coro::net::socket_disconnect_operation_impl::get_result(coro::detail::io_operation_base& operation) {
-    operation.get_result();
 }
 
 #endif //SOCKET_DISCONNECT_OPERATION_H

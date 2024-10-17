@@ -5,6 +5,9 @@
 #ifndef SHARED_shared_task_H
 #define SHARED_shared_task_H
 
+#include "../awaitable_traits.h"
+#include "../detail/remove_rvalue_reference.h"
+
 #include <coroutine>
 #include <exception>
 #include <atomic>
@@ -297,6 +300,12 @@ shared_task<T&> shared_task_promise<T&>::get_return_object() noexcept {
     return shared_task<T&>{ std::coroutine_handle<shared_task_promise>::from_promise(*this) };
 }
 
+}
+
+template<typename AWAITABLE>
+auto make_shared_task(AWAITABLE awaitable)
+    -> shared_task<detail::remove_rvalue_reference_t<typename detail::awaitable_traits<AWAITABLE>::await_result_t>> {
+    co_return co_await static_cast<AWAITABLE&&>(awaitable);
 }
 
 }

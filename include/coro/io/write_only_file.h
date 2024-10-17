@@ -16,7 +16,7 @@
 
 namespace coro {
 
-class write_only_file : public writable_file {
+class write_only_file final : public writable_file {
 public:
     /// Open a file for write-only access.
     ///
@@ -51,22 +51,10 @@ public:
         const std::filesystem::path& path,
         file_open_mode open_mode = file_open_mode::create_or_open,
         file_share_mode share_mode = file_share_mode::none,
-        file_buffering_mode buffering_mode = file_buffering_mode::default_) {
-        auto file = write_only_file(file::open(
-            GENERIC_WRITE,
-            io_svc,
-            path,
-            open_mode,
-            share_mode,
-            buffering_mode));
-        file.m_io_service = &io_svc;
-        return std::move(file);
-    }
+        file_buffering_mode buffering_mode = file_buffering_mode::default_);
 
 protected:
-    explicit write_only_file(detail::macos::safe_fd&& file_handle) noexcept
-        : file(std::move(file_handle))
-        , writable_file(detail::macos::safe_fd{}) {}
+    explicit write_only_file(detail::macos::safe_fd&& file_handle) noexcept;
 };
 
 }

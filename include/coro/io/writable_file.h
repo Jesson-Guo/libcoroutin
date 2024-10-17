@@ -17,19 +17,9 @@ public:
     ///
     /// \param file_size
     /// The new size of the file in bytes.
-    void set_size(off_t file_size) {
-        if (ftruncate(m_file_handle.fd(), file_size) < 0) {
-            throw std::system_error{
-                errno, std::system_category(), "error setting file size: ftruncate"
-            };
-        }
-    }
+    void set_size(off_t file_size) const;
 
-    [[nodiscard]] file_write_operation write(std::uint64_t offset, void* buffer, std::size_t byte_count) noexcept {
-        return file_write_operation{
-            *m_io_service, m_file_handle.fd(), offset, buffer, byte_count
-        };
-    }
+    [[nodiscard]] file_write_operation write(std::uint64_t offset, void* buffer, std::size_t byte_count) const noexcept;
 
     /// Write some data to the file.
     ///
@@ -60,11 +50,7 @@ public:
     /// An object that represents the write operation.
     /// This object must be co_await'ed to start the write operation.
     [[nodiscard]] file_write_operation_cancellable write(
-        std::uint64_t offset, void* buffer, std::size_t byte_count, cancellation_token ct) noexcept {
-        return file_write_operation_cancellable{
-            *m_io_service, m_file_handle.fd(), offset, buffer, byte_count, std::move(ct)
-        };
-    }
+        std::uint64_t offset, void* buffer, std::size_t byte_count, cancellation_token ct) const noexcept;
 
 protected:
     using file::file;

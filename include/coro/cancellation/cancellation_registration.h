@@ -6,11 +6,9 @@
 #define CANCELLATION_REGISTRATION_H
 
 #include "cancellation_token.h"
-#include "cancellation_state.h"
 
 #include <cstdint>
 #include <functional>
-#include <thread>
 
 namespace coro {
 
@@ -82,78 +80,5 @@ private:
 };
 
 }
-
-coro::cancellation_registration::~cancellation_registration() {
-    if (m_state) {
-        m_state->deregister_callback(this);
-        m_state->release_token_ref();
-    }
-}
-
-void coro::cancellation_registration::register_callback(cancellation_token&& token) {
-    auto* state = token.m_state;
-    if (state && state->can_be_cancelled()) {
-        m_state = state;
-        if (state->try_register_callback(this)) {
-            // 设置 token.m_state 为 nullptr：这表示 token 的状态已经转移给了 cancellation_registration，
-            // 以确保 token 的状态不会与 cancellation_registration 再次发生交互。
-            token.m_state = nullptr;
-        }
-        else {
-            m_state = nullptr;
-            m_callback();
-        }
-    }
-    else {
-        m_state = nullptr;
-    }
-}
-
-struct coro::detail::cancellation_registration_list_chunk {
-    static auto allocate(std::uint32_t entry_count) -> cancellation_registration_list_chunk*;
-    static void free(cancellation_registration_list_chunk* chunk) noexcept {
-        std::free(chunk);
-    }
-
-    std::atomic<cancellation_registration_list_chunk*> m_next_chunk;
-    cancellation_registration_list_chunk* m_prev_chunk;
-    std::atomic<std::int32_t> m_approx_free_count;
-    std::uint32_t m_entry_count;
-    std::atomic<cancellation_registration*> m_entries[1];
-};
-
-struct coro::detail::cancellation_registration_list {
-    static auto allocate() -> cancellation_registration_list*;
-    static void free(cancellation_registration_list* list) noexcept {
-        std::free(list);
-    }
-
-    std::atomic<cancellation_registration_list_chunk*> m_approx_tail;
-    cancellation_registration_list_chunk m_head_chunk;
-};
-
-struct coro::detail::cancellation_registration_result {
-    cancellation_registration_result(cancellation_registration_list_chunk* chunk, std::uint32_t entry_id)
-        : m_chunk(chunk)
-        , m_entry_id(entry_id) {}
-
-    cancellation_registration_list_chunk* m_chunk;
-    std::uint32_t m_entry_id;
-};
-
-struct coro::detail::cancellation_registration_state {
-    static auto allocate() -> cancellation_registration_state*;
-    static void free(cancellation_registration_state* state) noexcept {
-        std::free(state);
-    }
-
-    auto add_registration(cancellation_registration* registration) -> cancellation_registration_result;
-
-    std::thread::id m_notification_thread_id;
-
-    // 存储 N 个单独的列表并将线程随机分配到给定的列表中，以减少争用的机会。
-    std::uint32_t m_list_count;
-    std::atomic<cancellation_registration_list*> m_lists[1];
-};
 
 #endif //CANCELLATION_REGISTRATION_H

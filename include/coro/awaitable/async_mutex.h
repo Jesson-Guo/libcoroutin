@@ -5,9 +5,6 @@
 #ifndef ASYNC_MUTEX_H
 #define ASYNC_MUTEX_H
 
-#include "../async_generator.h"
-
-
 #include <atomic>
 #include <cassert>
 #include <coroutine>
@@ -33,6 +30,13 @@ public:
         assert(m_waiters == nullptr);
     }
 
+    /// \brief
+    /// Attempt to acquire a lock on the mutex without blocking.
+    ///
+    /// \return
+    /// true if the lock was acquired, false if the mutex was already locked.
+    /// The caller is responsible for ensuring unlock() is called on the mutex
+    /// to release the lock if the lock was acquired by this call.
     auto try_lock() noexcept -> bool {
         std::uintptr_t expected = not_locked;
         return m_state.compare_exchange_strong(
@@ -42,51 +46,45 @@ public:
             std::memory_order_relaxed);
     }
 
-    auto lock_async() noexcept -> async_mutex_lock_operation {
-        return async_mutex_lock_operation{*this};
-    }
+    /// \brief
+    /// Acquire a lock on the mutex asynchronously.
+    ///
+    /// If the lock could not be acquired synchronously then the awaiting
+    /// coroutine will be suspended and later resumed when the lock becomes
+    /// available. If suspended, the coroutine will be resumed inside the
+    /// call to unlock() from the previous lock owner.
+    ///
+    /// \return
+    /// An operation object that must be 'co_await'ed to wait until the
+    /// lock is acquired. The result of the 'co_await m.lock_async()'
+    /// expression has type 'void'.
+    auto lock_async() noexcept -> async_mutex_lock_operation;
 
-    auto scoped_lock_async() noexcept -> async_mutex_scoped_lock_operation {
-        return async_mutex_scoped_lock_operation{*this};
-    }
+    /// \brief
+    /// Acquire a lock on the mutex asynchronously, returning an object that
+    /// will call unlock() automatically when it goes out of scope.
+    ///
+    /// If the lock could not be acquired synchronously then the awaiting
+    /// coroutine will be suspended and later resumed when the lock becomes
+    /// available. If suspended, the coroutine will be resumed inside the
+    /// call to unlock() from the previous lock owner.
+    ///
+    /// \return
+    /// An operation object that must be 'co_await'ed to wait until the
+    /// lock is acquired. The result of the 'co_await m.scoped_lock_async()'
+    /// expression returns an 'async_mutex_lock' object that will call
+    /// this->mutex() when it destructs.
+    auto scoped_lock_async() noexcept -> async_mutex_scoped_lock_operation;
 
-    auto unlock() noexcept -> void {
-        std::uintptr_t old_state = m_state.load(std::memory_order_acquire);
-        while (true) {
-            if (old_state != locked_no_waiters) {
-                if (m_state.compare_exchange_weak(
-                    old_state,
-                    not_locked,
-                    std::memory_order_release,
-                    std::memory_order_relaxed)) {
-                    // unlocked successfully
-                    return;
-                }
-            }
-            else if (old_state == not_locked) {
-                // already unlocked
-                assert(false && "Unlocked called on an unlocked mutex");
-                return;
-            }
-            else {
-                auto* waiter = reinterpret_cast<async_mutex_lock_operation*>(old_state);
-                auto* next_waiter = waiter->m_next;
-
-                std::uintptr_t new_state = next_waiter != nullptr ?
-                    reinterpret_cast<std::uintptr_t>(next_waiter) : locked_no_waiters;
-
-                if (m_state.compare_exchange_weak(
-                    old_state,
-                    new_state,
-                    std::memory_order_release,
-                    std::memory_order_relaxed)) {
-                    // Successfully transferred lock to waiter
-                    waiter->m_awaiter.resume();
-                    return;
-                }
-            }
-        }
-    }
+    /// \brief
+    /// Unlock the mutex.
+    ///
+    /// Must only be called by the current lock-holder.
+    ///
+    /// If there are lock operations waiting to acquire the
+    /// mutex then the next lock operation in the queue will
+    /// be resumed inside this call.
+    auto unlock() noexcept -> void;
 
 private:
     friend class async_mutex_lock_operation;
@@ -94,6 +92,15 @@ private:
     static constexpr std::uintptr_t not_locked = 1;
     static constexpr std::uintptr_t locked_no_waiters = 0;
 
+    // This field provides synchronisation for the mutex.
+    //
+    // It can have three kinds of values:
+    // - not_locked
+    // - locked_no_waiters
+    // - a pointer to the head of a singly linked list of recently
+    //   queued async_mutex_lock_operation objects. This list is
+    //   in most-recently-queued order as new items are pushed onto
+    //   the front of the list.
     std::atomic<std::uintptr_t> m_state;
     async_mutex_lock_operation* m_waiters;
 };
@@ -122,37 +129,8 @@ private:
 class async_mutex_lock_operation {
 public:
     explicit async_mutex_lock_operation(async_mutex& mutex) noexcept : m_mutex(mutex) {}
-
     auto await_ready() noexcept -> bool { return false; }
-
-    auto await_suspend(std::coroutine_handle<> awaiter) noexcept -> bool {
-        m_awaiter = awaiter;
-        std::uintptr_t old_state = m_mutex.m_state.load(std::memory_order_acquire);
-        while (true) {
-            if (old_state == async_mutex::not_locked) {
-                if (m_mutex.m_state.compare_exchange_weak(
-                    old_state,
-                    async_mutex::locked_no_waiters,
-                    std::memory_order_acquire,
-                    std::memory_order_relaxed)) {
-                    // acquire lock successfully, no suspend.
-                    return false;
-                }
-            }
-            else {
-                m_next = reinterpret_cast<async_mutex_lock_operation*>(old_state);
-                if (m_mutex.m_state.compare_exchange_weak(
-                    old_state,
-                    reinterpret_cast<std::uintptr_t>(this),
-                    std::memory_order_release,
-                    std::memory_order_relaxed)) {
-                    // add to waiting list
-                    return true;
-                }
-            }
-        }
-    }
-
+    auto await_suspend(std::coroutine_handle<> awaiter) noexcept -> bool;
     auto await_resume() const noexcept -> void {}
 
 protected:

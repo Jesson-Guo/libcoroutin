@@ -5,8 +5,6 @@
 #ifndef CANCELLATION_SOURCE_H
 #define CANCELLATION_SOURCE_H
 
-#include "cancellation_state.h"
-
 namespace coro {
 
 class cancellation_token;
@@ -56,7 +54,7 @@ public:
     /// call this method.
     ///
     /// This operation is a no-op if can_be_cancelled() returns false.
-    auto request_cancellation() -> void;
+    auto request_cancellation() const -> void;
 
     /// Query if some thread has called 'request_cancellation()' on this
     /// cancellation_source.
@@ -66,70 +64,6 @@ private:
     detail::cancellation_state* m_state;
 };
 
-}
-
-coro::cancellation_source::cancellation_source() : m_state(detail::cancellation_state::create()) {}
-
-coro::cancellation_source::cancellation_source(const cancellation_source& other) noexcept
-    : m_state(other.m_state) {
-    if (m_state) {
-        m_state->add_source_ref();
-    }
-}
-
-coro::cancellation_source::cancellation_source(cancellation_source&& other) noexcept
-    : m_state(other.m_state) {
-    other.m_state = nullptr;
-}
-
-coro::cancellation_source::~cancellation_source() {
-    if (m_state) {
-        m_state->release_source_ref();
-    }
-}
-
-coro::cancellation_source& coro::cancellation_source::operator=(const cancellation_source& other) noexcept {
-    if (m_state != other.m_state) {
-        if (m_state) {
-            m_state->release_source_ref();
-        }
-        m_state = other.m_state;
-        if (m_state) {
-            m_state->add_source_ref();
-        }
-    }
-
-    return *this;
-}
-
-coro::cancellation_source& coro::cancellation_source::operator=(cancellation_source&& other) noexcept {
-    if (this != &other) {
-        if (m_state) {
-            m_state->release_source_ref();
-        }
-        m_state = other.m_state;
-        other.m_state = nullptr;
-    }
-
-    return *this;
-}
-
-bool coro::cancellation_source::can_be_cancelled() const noexcept {
-    return m_state != nullptr;
-}
-
-coro::cancellation_token coro::cancellation_source::token() const noexcept {
-    return cancellation_token(m_state);
-}
-
-void coro::cancellation_source::request_cancellation() {
-    if (m_state) {
-        m_state->request_cancellation();
-    }
-}
-
-bool coro::cancellation_source::is_cancellation_requested() const noexcept {
-    return m_state && m_state->is_cancellation_requested();
 }
 
 #endif //CANCELLATION_SOURCE_H

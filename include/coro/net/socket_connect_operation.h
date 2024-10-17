@@ -24,9 +24,9 @@ public:
 		: m_socket(socket)
 		, m_remote_endpoint(remote_endpoint) {}
 
-	bool try_start(coro::detail::io_operation_base& operation) noexcept;
+	bool try_start(coro::detail::io_operation_base& operation) const noexcept;
 	void cancel(coro::detail::io_operation_base& operation) noexcept;
-	void get_result(coro::detail::io_operation_base& operation);
+	void get_result(coro::detail::io_operation_base& operation) const;
 
 private:
 	socket& m_socket;
@@ -65,30 +65,6 @@ private:
 	socket_connect_operation_impl m_connect_op_impl;
 };
 
-}
-
-bool coro::net::socket_connect_operation_impl::try_start(coro::detail::io_operation_base& operation) noexcept {
-    SOCKADDR_STORAGE remote_sockaddr_storage{};
-    const int remoteLength = detail::ip_endpoint_to_sockaddr(m_remote_endpoint, std::ref(remote_sockaddr_storage));
-    return operation.m_io_queue.transaction(operation.m_message)
-        .connect(m_socket.native_handle(), &remote_sockaddr_storage, remoteLength)
-        .commit();
-}
-
-void coro::net::socket_connect_operation_impl::cancel(coro::detail::io_operation_base& operation) noexcept {
-    operation.m_io_queue.transaction(operation.m_message).cancel().commit();
-}
-
-void coro::net::socket_connect_operation_impl::get_result(coro::detail::io_operation_base& operation) {
-    SOCKADDR_STORAGE remote_sockaddr_storage{};
-    socklen_t remote_sock_len = sizeof(remote_sockaddr_storage);
-    if(getpeername(m_socket.native_handle(), reinterpret_cast<sockaddr*>(&remote_sockaddr_storage), &remote_sock_len) < 0) {
-        throw std::system_error{
-            errno,
-            std::generic_category()
-        };
-    }
-    m_socket.m_remote_endpoint = detail::sockaddr_to_ip_endpoint(std::ref(*reinterpret_cast<sockaddr*>(&remote_sockaddr_storage)));
 }
 
 #endif //SOCKET_CONNECT_OPERATION_H

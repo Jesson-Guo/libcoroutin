@@ -5,6 +5,9 @@
 #ifndef TASK_H
 #define TASK_H
 
+#include "../awaitable_traits.h"
+#include "../detail/remove_rvalue_reference.h"
+
 #include <coroutine>
 #include <exception>
 
@@ -254,6 +257,11 @@ task<T&> task_promise<T&>::get_return_object() noexcept {
     return task<T&>{ std::coroutine_handle<task_promise>::from_promise(*this) };
 }
 
+}
+
+template<typename AWAITABLE>
+auto make_task(AWAITABLE awaitable) -> task<detail::remove_rvalue_reference_t<typename detail::awaitable_traits<AWAITABLE>::await_result_t>> {
+    co_return co_await static_cast<AWAITABLE&&>(awaitable);
 }
 
 }

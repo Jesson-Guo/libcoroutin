@@ -12,27 +12,10 @@ namespace coro {
 
 class spin_wait {
 public:
-    spin_wait() noexcept {
-        reset();
-    }
-
-    auto next_spin_will_yield() const noexcept -> bool {
-        return spin_count >= threshold;
-    }
-
-    auto spin_one() noexcept -> void {
-        if (next_spin_will_yield()) {
-            std::this_thread::yield();
-        }
-        ++spin_count;
-        if (spin_count == 0) {
-            spin_count = threshold;
-        }
-    }
-
-    auto reset() noexcept -> void {
-        spin_count = std::thread::hardware_concurrency() > 1 ? 0 : threshold;
-    }
+    spin_wait() noexcept : spin_count(std::thread::hardware_concurrency() > 1 ? 0 : threshold) {}
+    auto next_spin_will_yield() const noexcept -> bool { return spin_count >= threshold; }
+    auto spin_one() noexcept -> void;
+    auto reset() noexcept -> void { spin_count = std::thread::hardware_concurrency() > 1 ? 0 : threshold; }
 
 private:
     constexpr std::uint32_t threshold = 10;

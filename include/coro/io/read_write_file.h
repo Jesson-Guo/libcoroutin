@@ -14,11 +14,11 @@
 #include <filesystem>
 
 #define GENERIC_READ (S_IRUSR | S_IRGRP | S_IROTH)
-#define GENERIC_WRITE (S_IWUSR | S_IWGRP /* | S_IWOTH */)
+#define GENERIC_WRITE (S_IWUSR | S_IWGRP)
 
 namespace coro {
 
-class read_write_file : public readable_file, public writable_file {
+class read_write_file final : public readable_file, public writable_file {
 public:
     /// Open a file for read-write access.
     ///
@@ -53,23 +53,10 @@ public:
         const std::filesystem::path& path,
         file_open_mode open_mode = file_open_mode::create_or_open,
         file_share_mode share_mode = file_share_mode::none,
-        file_buffering_mode buffering_mode = file_buffering_mode::default_) {
-        auto file = read_write_file(file::open(
-            GENERIC_READ | GENERIC_WRITE,
-            io_svc,
-            path,
-            open_mode,
-            share_mode,
-            buffering_mode));
-        file.m_io_svc = &io_svc;
-        return std::move(file);
-    }
+        file_buffering_mode buffering_mode = file_buffering_mode::default_);
 
 protected:
-    explicit read_write_file(detail::macos::safe_fd&& file_handle) noexcept
-        : file(std::move(file_handle))
-        , readable_file()
-        , writable_file() {}
+    explicit read_write_file(detail::macos::safe_fd&& file_handle) noexcept;
 };
 
 }

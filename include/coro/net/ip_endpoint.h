@@ -30,9 +30,9 @@ public:
 
     ip_address address() const noexcept {
 	    if (is_ipv4()) {
-            return m_ipv4.address();
+            return ip_address(m_ipv4.address());
         }
-        return m_ipv6.address();
+        return ip_address(m_ipv6.address());
     }
 
     std::uint16_t port() const noexcept {
