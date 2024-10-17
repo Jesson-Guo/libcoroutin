@@ -139,4 +139,12 @@ add_executable(libcoroutine src/coro/thread_pool.cpp
         include/coro/detail/sync_wait.h
         include/coro/detail/sync_wait_task.h
         include/coro/detail/remove_rvalue_reference.h
+        include/coro/detail/when_all_counter.h
+        include/coro/detail/void_value.h
+        include/coro/detail/when_all_task.h
+        include/coro/detail/when_all_ready_awaitable.h
+        include/coro/when_all_ready.h
+        include/coro/is_awaitable.h
+        include/coro/when_all.h
+        include/coro/fmap.h
 )
