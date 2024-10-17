@@ -67,4 +67,5 @@ add_executable(libcoroutine main.cpp
         include/coro/io/read_write_file.h
         include/coro/sequence_range.h
         include/coro/sequence_barrier.h
+        include/coro/awaitable/multi_producer_sequencer.h
 )

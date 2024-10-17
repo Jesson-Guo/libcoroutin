@@ -259,7 +259,7 @@ void sequence_barrier<sequence, traits>::publish(sequence seq) noexcept {
 
     while (awaiters != nullptr) {
         auto* next = awaiters->m_next;
-        if (traits::precedes(seq, awaiters->m_targetSequence)) {
+        if (traits::precedes(seq, awaiters->m_target_seq)) {
             *awaiters_to_requeue_tail = awaiters;
             awaiters_to_requeue_tail = &awaiters->m_next;
         }
