@@ -7,6 +7,7 @@
 
 #include "../awaitable_traits.h"
 #include "../detail/remove_rvalue_reference.h"
+#include "../broken_promise.h"
 
 #include <coroutine>
 #include <exception>
@@ -215,6 +216,9 @@ public:
             using awaitable_base::awaitable_base;
 
             decltype(auto) await_resume() noexcept {
+                if (!this->m_handle) {
+                    throw broken_promise{};
+                }
                 return this->m_handle.promise().result();
             }
         };
@@ -225,6 +229,9 @@ public:
         struct awaitable : awaitable_base {
             using awaitable_base::awaitable_base;
             decltype(auto) await_resume() noexcept {
+                if (!this->m_handle) {
+                    throw broken_promise{};
+                }
                 return std::move(this->m_handle.promise()).result();
             }
         };

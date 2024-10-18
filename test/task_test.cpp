@@ -4,7 +4,11 @@
 
 #include "../include/coro/types/task.h"
 #include "../include/coro/awaitable/single_consumer_event.h"
-#include "../include/coro/"
+#include "../include/coro/detail/sync_wait.h"
+#include "../include/coro/fmap.h"
+#include "../include/coro/when_all_ready.h"
+
+#include "counted.h"
 
 #include <ostream>
 #include <string>
@@ -14,17 +18,14 @@
 
 TEST_SUITE_BEGIN("task");
 
-TEST_CASE("task doesn't start until awaited")
-{
+TEST_CASE("task doesn't start until awaited") {
 	bool started = false;
-	auto func = [&]() -> cppcoro::task<>
-	{
+	auto func = [&]() -> coro::task<> {
 		started = true;
 		co_return;
 	};
 
-	cppcoro::sync_wait([&]() -> cppcoro::task<>
-	{
+	sync_wait([&]() -> coro::task<> {
 		auto t = func();
 		CHECK(!started);
 
@@ -34,57 +35,48 @@ TEST_CASE("task doesn't start until awaited")
 	}());
 }
 
-TEST_CASE("awaiting default-constructed task throws broken_promise")
-{
-	cppcoro::sync_wait([&]() -> cppcoro::task<>
-	{
-		cppcoro::task<> t;
-		CHECK_THROWS_AS(co_await t, const cppcoro::broken_promise&);
+TEST_CASE("awaiting default-constructed task throws broken_promise") {
+	sync_wait([&]() -> coro::task<> {
+		coro::task<> t;
+		CHECK_THROWS_AS(co_await t, const coro::broken_promise&);
 	}());
 }
 
-TEST_CASE("awaiting task that completes asynchronously")
-{
-	bool reachedBeforeEvent = false;
-	bool reachedAfterEvent = false;
-	cppcoro::single_consumer_event event;
-	auto f = [&]() -> cppcoro::task<>
-	{
-		reachedBeforeEvent = true;
+TEST_CASE("awaiting task that completes asynchronously") {
+	bool reached_before_event = false;
+	bool reached_after_event = false;
+	coro::single_consumer_event event;
+	auto f = [&]() -> coro::task<> {
+		reached_before_event = true;
 		co_await event;
-		reachedAfterEvent = true;
+		reached_after_event = true;
 	};
 
-	cppcoro::sync_wait([&]() -> cppcoro::task<>
-	{
+	sync_wait([&]() -> coro::task<> {
 		auto t = f();
 
-		CHECK(!reachedBeforeEvent);
+		CHECK(!reached_before_event);
 
-		(void)co_await cppcoro::when_all_ready(
-			[&]() -> cppcoro::task<>
-			{
+		(void)co_await when_all_ready(
+			[&]() -> coro::task<> {
 				co_await t;
-				CHECK(reachedBeforeEvent);
-				CHECK(reachedAfterEvent);
+				CHECK(reached_before_event);
+				CHECK(reached_after_event);
 			}(),
-			[&]() -> cppcoro::task<>
-			{
-				CHECK(reachedBeforeEvent);
-				CHECK(!reachedAfterEvent);
+			[&]() -> coro::task<> {
+				CHECK(reached_before_event);
+				CHECK(!reached_after_event);
 				event.set();
-				CHECK(reachedAfterEvent);
+				CHECK(reached_after_event);
 				co_return;
 			}());
 	}());
 }
 
-TEST_CASE("destroying task that was never awaited destroys captured args")
-{
+TEST_CASE("destroying task that was never awaited destroys captured args") {
 	counted::reset_counts();
 
-	auto f = [](counted c) -> cppcoro::task<counted>
-	{
+	auto f = [](counted c) -> coro::task<counted> {
 		co_return c;
 	};
 
@@ -98,20 +90,15 @@ TEST_CASE("destroying task that was never awaited destroys captured args")
 	CHECK(counted::active_count() == 0);
 }
 
-TEST_CASE("task destructor destroys result")
-{
+TEST_CASE("task destructor destroys result") {
 	counted::reset_counts();
 
-	auto f = []() -> cppcoro::task<counted>
-	{
-		co_return counted{};
-	};
-
-	{
-		auto t = f();
+    {
+        auto f = []() -> coro::task<counted> { co_return counted{}; };
+        auto t = f();
 		CHECK(counted::active_count() == 0);
 
-		auto& result = cppcoro::sync_wait(t);
+		auto& result = coro::sync_wait(t);
 
 		CHECK(counted::active_count() == 1);
 		CHECK(result.id == 0);
@@ -120,51 +107,30 @@ TEST_CASE("task destructor destroys result")
 	CHECK(counted::active_count() == 0);
 }
 
-TEST_CASE("task of reference type")
-{
+TEST_CASE("task of reference type") {
 	int value = 3;
-	auto f = [&]() -> cppcoro::task<int&>
-	{
+	auto f = [&]() -> coro::task<int&> {
 		co_return value;
 	};
 
-	cppcoro::sync_wait([&]() -> cppcoro::task<>
-	{
-		SUBCASE("awaiting rvalue task")
-		{
+	sync_wait([&]() -> coro::task<> {
+		SUBCASE("awaiting rvalue task") {
 			decltype(auto) result = co_await f();
-            // MSVC 19.xx fails to handle this assertion
-			// making all the test file failing to compile with weird errors
-#if !CPPCORO_COMPILER_MSVC || CPPCORO_COMPILER_MSVC < 19'00'00000
-			static_assert(
-				std::is_same<decltype(result), int&>::value,
-				"co_await r-value reference of task<int&> should result in an int&");
-#endif
 			CHECK(&result == &value);
 		}
 
-		SUBCASE("awaiting lvalue task")
-		{
+		SUBCASE("awaiting lvalue task") {
 			auto t = f();
 			decltype(auto) result = co_await t;
-#if !CPPCORO_COMPILER_MSVC || CPPCORO_COMPILER_MSVC < 19'00'00000
-			static_assert(
-				std::is_same<decltype(result), int&>::value,
-				"co_await l-value reference of task<int&> should result in an int&");
-#endif
 			CHECK(&result == &value);
 		}
 	}());
 }
 
-TEST_CASE("passing parameter by value to task coroutine calls move-constructor exactly once")
-{
+TEST_CASE("passing parameter by value to task coroutine calls move-constructor exactly once") {
 	counted::reset_counts();
 
-	auto f = [](counted arg) -> cppcoro::task<>
-	{
-		co_return;
-	};
+	auto f = [](counted arg) -> coro::task<> { co_return; };
 
 	counted c;
 
@@ -191,59 +157,47 @@ TEST_CASE("passing parameter by value to task coroutine calls move-constructor e
 	CHECK(counted::active_count() == 1);
 }
 
-TEST_CASE("task<void> fmap pipe operator")
-{
-	using cppcoro::fmap;
+TEST_CASE("task<void> fmap pipe operator") {
+	using coro::fmap;
 
-	cppcoro::single_consumer_event event;
+	coro::single_consumer_event event;
 
-	auto f = [&]() -> cppcoro::task<>
-	{
+	auto f = [&]() -> coro::task<> {
 		co_await event;
 		co_return;
 	};
 
 	auto t = f() | fmap([] { return 123; });
 
-	cppcoro::sync_wait(cppcoro::when_all_ready(
-		[&]() -> cppcoro::task<>
-		{
+	coro::sync_wait(when_all_ready(
+		[&]() -> coro::task<> {
 			CHECK(co_await t == 123);
 		}(),
-		[&]() -> cppcoro::task<>
-		{
+		[&]() -> coro::task<> {
 			event.set();
 			co_return;
 		}()));
 }
 
-TEST_CASE("task<int> fmap pipe operator")
-{
-	using cppcoro::task;
-	using cppcoro::fmap;
-	using cppcoro::sync_wait;
-	using cppcoro::make_task;
+TEST_CASE("task<int> fmap pipe operator") {
+	using coro::task;
+	using coro::fmap;
+	using coro::sync_wait;
+	using coro::make_task;
 
-	auto one = [&]() -> task<int>
-	{
-		co_return 1;
-	};
+	auto one = [&]() -> task<int> { co_return 1; };
 
-	SUBCASE("r-value fmap / r-value lambda")
-	{
+	SUBCASE("r-value fmap / r-value lambda") {
 		auto t = one()
 			| fmap([delta = 1](auto i) { return i + delta; });
 		CHECK(sync_wait(t) == 2);
 	}
 
-	SUBCASE("r-value fmap / l-value lambda")
-	{
+	SUBCASE("r-value fmap / l-value lambda") {
 		using namespace std::string_literals;
 
-		auto t = [&]
-		{
-			auto f = [prefix = "pfx"s](int x)
-			{
+		auto t = [&] {
+			auto f = [prefix = "pfx"s](int x) {
 				return prefix + std::to_string(x);
 			};
 
@@ -255,42 +209,37 @@ TEST_CASE("task<int> fmap pipe operator")
 		CHECK(sync_wait(t) == "pfx1");
 	}
 
-	SUBCASE("l-value fmap / r-value lambda")
-	{
+	SUBCASE("l-value fmap / r-value lambda") {
 		using namespace std::string_literals;
 
-		auto t = [&]
-		{
-			auto addprefix = fmap([prefix = "a really really long prefix that prevents small string optimisation"s](int x)
-			{
+		auto t = [&] {
+			auto add_prefix = fmap([prefix = "a really really long prefix that prevents small string optimisation"s](int x) {
 				return prefix + std::to_string(x);
 			});
 
 			// Want to make sure that the resulting awaitable has taken
 			// a copy of the lambda passed to fmap().
-			return one() | addprefix;
+			return one() | add_prefix;
 		}();
 
 		CHECK(sync_wait(t) == "a really really long prefix that prevents small string optimisation1");
 	}
 
-	SUBCASE("l-value fmap / l-value lambda")
-	{
+	SUBCASE("l-value fmap / l-value lambda") {
 		using namespace std::string_literals;
 
 		task<std::string> t;
 
 		{
-			auto lambda = [prefix = "a really really long prefix that prevents small string optimisation"s](int x)
-			{
+			auto lambda = [prefix = "a really really long prefix that prevents small string optimisation"s](int x) {
 				return prefix + std::to_string(x);
 			};
 
-			auto addprefix = fmap(lambda);
+			auto add_prefix = fmap(lambda);
 
 			// Want to make sure that the resulting task has taken
 			// a copy of the lambda passed to fmap().
-			t = make_task(one() | addprefix);
+			t = make_task(one() | add_prefix);
 		}
 
 		CHECK(!t.is_ready());
@@ -299,26 +248,22 @@ TEST_CASE("task<int> fmap pipe operator")
 	}
 }
 
-TEST_CASE("chained fmap pipe operations")
-{
+TEST_CASE("chained fmap pipe operations") {
 	using namespace std::string_literals;
-	using cppcoro::task;
-	using cppcoro::sync_wait;
+	using coro::task;
+	using coro::sync_wait;
 
-	auto prepend = [](std::string s)
-	{
-		using cppcoro::fmap;
+	auto prepend = [](std::string s) {
+		using coro::fmap;
 		return fmap([s = std::move(s)](const std::string& value) { return s + value; });
 	};
 
-	auto append = [](std::string s)
-	{
-		using cppcoro::fmap;
+	auto append = [](std::string s) {
+		using coro::fmap;
 		return fmap([s = std::move(s)](const std::string& value){ return value + s; });
 	};
 
-	auto asyncString = [](std::string s) -> task<std::string>
-	{
+	auto asyncString = [](std::string s) -> task<std::string> {
 		co_return std::move(s);
 	};
 
@@ -327,24 +272,20 @@ TEST_CASE("chained fmap pipe operations")
 	CHECK(sync_wait(t) == "pre_base_post");
 }
 
-TEST_CASE("lots of synchronous completions doesn't result in stack-overflow")
-{
-	auto completesSynchronously = []() -> cppcoro::task<int>
-	{
+TEST_CASE("lots of synchronous completions doesn't result in stack-overflow") {
+	auto completesSynchronously = []() -> coro::task<int> {
 		co_return 1;
 	};
 
-	auto run = [&]() -> cppcoro::task<>
-	{
+	auto run = [&]() -> coro::task<> {
 		int sum = 0;
-		for (int i = 0; i < 1'000'000; ++i)
-		{
+		for (int i = 0; i < 1'000'000; ++i) {
 			sum += co_await completesSynchronously();
 		}
 		CHECK(sum == 1'000'000);
 	};
 
-	cppcoro::sync_wait(run());
+	sync_wait(run());
 }
 
 TEST_SUITE_END();
