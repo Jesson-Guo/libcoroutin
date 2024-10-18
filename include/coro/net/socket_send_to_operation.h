@@ -5,12 +5,9 @@
 #ifndef SOCKET_SEND_TO_OPERATION_H
 #define SOCKET_SEND_TO_OPERATION_H
 
-#include "socket.h"
-#include <sys/socket.h>
-#include <netinet/in.h>
-#include <unistd.h>
-#include <cstring>
-#include <system_error>
+#include "ip_endpoint.h"
+#include "../cancellation/cancellation_token.h"
+#include "../detail/macos_io_operation.h"
 
 namespace coro::net {
 

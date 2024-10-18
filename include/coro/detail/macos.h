@@ -461,7 +461,7 @@ coro::detail::macos::io_transaction& coro::detail::macos::io_transaction::sendms
 
 coro::detail::macos::io_transaction& coro::detail::macos::io_transaction::connect(int fd, const void* addr, socklen_t addrlen) noexcept {
     if (fd >= 0 && addr != nullptr) {
-        int res = ::connect(fd, addr, addrlen);
+        int res = ::connect(fd, static_cast<const struct sockaddr*>(const_cast<void*>(addr)), addrlen);
         if (res == -1 && errno != EINPROGRESS) {
             m_message.result = -errno;
         }
@@ -479,7 +479,7 @@ coro::detail::macos::io_transaction& coro::detail::macos::io_transaction::accept
     if (fd >= 0) {
         EV_SET(&m_event, fd, EVFILT_READ, EV_ADD | EV_ONESHOT, 0, 0, nullptr);
         m_message.fd = fd;
-        m_message.buffer = addr;
+        m_message.buffer = const_cast<void*>(addr);
         m_message.size = addrlen ? *addrlen : 0;
         m_message.operation = io_operation_type::ACCEPT;
         m_message.type = RESUME_TYPE;

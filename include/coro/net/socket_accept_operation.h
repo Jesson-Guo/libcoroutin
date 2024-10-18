@@ -6,11 +6,7 @@
 #define SOCKET_ACCEPT_OPERATION_H
 
 #include "../cancellation/cancellation_token.h"
-#include "../cancellation/cancellation_registration.h"
 #include "../detail/macos_io_operation.h"
-
-#include "socket.h"
-#include "socket_helpers.h"
 
 namespace coro::net {
 

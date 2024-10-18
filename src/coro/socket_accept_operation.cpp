@@ -3,6 +3,7 @@
 //
 
 #include "../../include/coro/net/socket_accept_operation.h"
+#include "../../include/coro/net/socket.h"
 
 bool coro::net::socket_accept_operation_impl::try_start(
     coro::detail::io_operation_base &operation) noexcept {

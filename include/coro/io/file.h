@@ -3,7 +3,7 @@
 //
 
 #ifndef FILE_H
-#define
+#define FILE_H
 
 #include "file_buffering_mode.h"
 #include "file_open_mode.h"

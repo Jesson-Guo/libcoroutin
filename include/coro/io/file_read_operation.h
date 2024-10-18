@@ -62,7 +62,7 @@ public:
 
 private:
 
-    friend io_operation_cancellable;
+    friend detail::io_operation_cancellable<file_read_operation_cancellable>;
 
     bool try_start() noexcept { return m_file_read_impl.try_start(*this, m_offset); }
     void cancel() noexcept { m_file_read_impl.cancel(*this); }

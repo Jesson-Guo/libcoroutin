@@ -3,23 +3,25 @@
 //
 
 #include "../../include/coro/net/socket_helpers.h"
+#include "../../include/coro/net/ipv4_address.h"
+#include "../../include/coro/net/ipv6_address.h"
 
 coro::net::ip_endpoint coro::net::detail::sockaddr_to_ip_endpoint(const sockaddr& address) noexcept {
     if (address.sa_family == AF_INET) {
-        SOCKADDR_IN ipv4_address{};
-        std::memcpy(&ipv4_address, &address, sizeof(ipv4_address));
+        SOCKADDR_IN ipv4_addr{};
+        std::memcpy(&ipv4_addr, &address, sizeof(ipv4_addr));
 
         std::uint8_t address_bytes[4];
-        std::memcpy(address_bytes, &ipv4_address.sin_addr, 4);
+        std::memcpy(address_bytes, &ipv4_addr.sin_addr, 4);
 
-        return ipv4_endpoint{ipv4_address{address_bytes}, ntohs(ipv4_address.sin_port)};
+        return ipv4_endpoint{ipv4_address{address_bytes}, ntohs(ipv4_addr.sin_port)};
     }
     assert(address.sa_family == AF_INET6);
 
-    SOCKADDR_IN6 ipv6_address{};
-    std::memcpy(&ipv6_address, &address, sizeof(ipv6_address));
+    SOCKADDR_IN6 ipv6_addr{};
+    std::memcpy(&ipv6_addr, &address, sizeof(ipv6_addr));
 
-    return ipv6_endpoint{ipv6_address{ipv6_address.sin6_addr.s6_addr}, ntohs(ipv6_address.sin6_port)};
+    return ipv6_endpoint{ipv6_address{ipv6_addr.sin6_addr.s6_addr}, ntohs(ipv6_addr.sin6_port)};
 }
 
 int coro::net::detail::ip_endpoint_to_sockaddr(

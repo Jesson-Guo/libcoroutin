@@ -5,8 +5,8 @@
 #ifndef SOCKET_DISCONNECT_OPERATION_H
 #define SOCKET_DISCONNECT_OPERATION_H
 
+#include "../cancellation/cancellation_token.h"
 #include "../detail/macos_io_operation.h"
-#include "socket.h"
 
 namespace coro::net {
 

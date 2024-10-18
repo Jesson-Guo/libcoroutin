@@ -18,7 +18,7 @@ public:
     auto reset() noexcept -> void { spin_count = std::thread::hardware_concurrency() > 1 ? 0 : threshold; }
 
 private:
-    constexpr std::uint32_t threshold = 10;
+    static constexpr std::uint32_t threshold = 10;
     std::uint32_t spin_count;
 };
 

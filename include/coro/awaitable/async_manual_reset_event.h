@@ -25,8 +25,8 @@ public:
 
     async_manual_reset_event_operation operator co_await() const noexcept;
 
-    auto is_set() noexcept -> bool {
-        return m_state.load(std::memory_order_acquire) == static_cast<void*>(this);
+    auto is_set() const noexcept -> bool {
+        return m_state.load(std::memory_order_acquire) == static_cast<const void*>(this);
     }
 
     auto set() noexcept -> void;
@@ -61,7 +61,7 @@ public:
 private:
     friend class async_manual_reset_event;
 
-    async_manual_reset_event& m_event;
+    const async_manual_reset_event& m_event;
     async_manual_reset_event_operation* m_next;
     std::coroutine_handle<> m_awaiter;
 };

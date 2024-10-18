@@ -6,11 +6,11 @@
 #define SOCKET_RECV_FROM_OPERATION_H
 
 #include "ip_endpoint.h"
-#include "socket.h"
+#include "../cancellation/cancellation_token.h"
+#include "../detail/macos_io_operation.h"
+
 #include <cstring>
-#include <sys/socket.h>
 #include <tuple>
-#include <sys/stat.h>
 
 namespace coro::net {
 

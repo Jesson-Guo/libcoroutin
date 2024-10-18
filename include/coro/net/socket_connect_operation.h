@@ -6,13 +6,8 @@
 #define SOCKET_CONNECT_OPERATION_H
 
 #include "../cancellation/cancellation_token.h"
-#include "../cancellation/cancellation_registration.h"
 #include "../detail/macos_io_operation.h"
 #include "ip_endpoint.h"
-#include "socket.h"
-#include "socket_helpers.h"
-
-#include <cassert>
 
 namespace coro::net {
 
@@ -24,9 +19,9 @@ public:
 		: m_socket(socket)
 		, m_remote_endpoint(remote_endpoint) {}
 
-	bool try_start(coro::detail::io_operation_base& operation) const noexcept;
-	void cancel(coro::detail::io_operation_base& operation) noexcept;
-	void get_result(coro::detail::io_operation_base& operation) const;
+	bool try_start(detail::io_operation_base& operation) const noexcept;
+	void cancel(detail::io_operation_base& operation) noexcept;
+	void get_result(detail::io_operation_base& operation) const;
 
 private:
 	socket& m_socket;

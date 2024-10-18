@@ -3,6 +3,7 @@
 //
 
 #include "../../include/coro/net/socket_recv_from_operation.h"
+#include "../../include/coro/net/socket.h"
 
 bool coro::net::socket_recv_from_operation_impl::try_start(coro::detail::io_operation_base& operation) noexcept {
     // 初始化用于接收数据的 iovec 和 msghdr 结构

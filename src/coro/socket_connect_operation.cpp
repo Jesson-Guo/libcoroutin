@@ -3,6 +3,7 @@
 //
 
 #include "../../include/coro/net/socket_connect_operation.h"
+#include "../../include/coro/net/socket.h"
 
 bool coro::net::socket_connect_operation_impl::try_start(coro::detail::io_operation_base& operation) const noexcept {
     SOCKADDR_STORAGE remote_sockaddr_storage{};

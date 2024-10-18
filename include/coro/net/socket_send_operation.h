@@ -5,7 +5,8 @@
 #ifndef SOCKET_SEND_OPERATION_H
 #define SOCKET_SEND_OPERATION_H
 
-#include "socket.h"
+#include "../cancellation/cancellation_token.h"
+#include "../detail/macos_io_operation.h"
 
 namespace coro::net {
 
@@ -17,7 +18,7 @@ public:
         , m_buffer(const_cast<void*>(buffer))
         , m_byte_count(size) {}
 
-    bool try_start(coro::detail::io_operation_base& operation) noexcept;
+    bool try_start(coro::detail::io_operation_base& operation) const noexcept;
     void cancel(coro::detail::io_operation_base& operation) noexcept;
 
 private:

@@ -62,7 +62,7 @@ struct cancellation_registration_state {
 auto coro::detail::cancellation_registration_list_chunk::allocate(std::uint32_t entry_count)
     -> cancellation_registration_list_chunk* {
     auto chunk_size = sizeof(cancellation_registration_list_chunk) + (entry_count - 1) * sizeof(m_entries[0]);
-    auto* chunk = static_cast<cancellation_registration_list_chunk*>(std::malloc(chunk_size);
+    auto* chunk = static_cast<cancellation_registration_list_chunk*>(std::malloc(chunk_size));
 
     if (!chunk) {
         throw std::bad_alloc{};

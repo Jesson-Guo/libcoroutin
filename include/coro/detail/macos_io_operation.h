@@ -8,6 +8,7 @@
 #include "macos.h"
 #include "../operation_cancelled.h"
 #include "../cancellation/cancellation_token.h"
+#include "../cancellation/cancellation_registration.h"
 
 #include <coroutine>
 #include <optional>

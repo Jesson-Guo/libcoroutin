@@ -17,11 +17,11 @@ coro::read_write_file coro::read_write_file::open(
         open_mode,
         share_mode,
         buffering_mode));
-    f.m_io_svc = &io_svc;
+    f.m_io_service = &io_svc;
     return std::move(f);
 }
 
 coro::read_write_file::read_write_file(detail::macos::safe_fd&& file_handle) noexcept
     : file(std::move(file_handle))
-    , readable_file()
-    , writable_file() {}
+    , readable_file(detail::macos::safe_fd{})
+    , writable_file(detail::macos::safe_fd{}) {}

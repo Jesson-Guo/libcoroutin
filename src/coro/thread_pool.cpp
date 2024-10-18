@@ -149,8 +149,8 @@ private:
     using offset_t = std::make_signed_t<std::size_t>;
 
     // Keep each thread's local queue under 1MB
-    constexpr std::size_t max_local_queue_size = 1024 * 1024 / sizeof(void*);
-    constexpr std::size_t local_queue_size = 256;
+    static constexpr std::size_t max_local_queue_size = 1024 * 1024 / sizeof(void*);
+    static constexpr std::size_t local_queue_size = 256;
 
     static constexpr offset_t diff(size_t a, size_t b) {
         return static_cast<offset_t>(a - b);

@@ -3,6 +3,7 @@
 //
 
 #include "../../include/coro/net/socket_send_to_operation.h"
+#include "../../include/coro/net/socket.h"
 
 bool coro::net::socket_send_to_operation_impl::try_start(coro::detail::io_operation_base& operation) noexcept {
     // 准备 iovec 结构，指向要发送的数据缓冲区

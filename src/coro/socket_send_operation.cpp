@@ -3,8 +3,9 @@
 //
 
 #include "../../include/coro/net/socket_send_operation.h"
+#include "../../include/coro/net/socket.h"
 
-bool coro::net::socket_send_operation_impl::try_start(coro::detail::io_operation_base& operation) noexcept {
+bool coro::net::socket_send_operation_impl::try_start(coro::detail::io_operation_base& operation) const noexcept {
     return operation.m_io_queue.transaction(operation.m_message)
         .send(m_socket.native_handle(), m_buffer, m_byte_count)
         .commit();

@@ -12,7 +12,7 @@ namespace coro::detail {
 
 class lightweight_manual_reset_event {
 public:
-    explicit lightweight_manual_reset_event(bool init = false) : m_value(init ? 1 : 0) {}
+    explicit lightweight_manual_reset_event(bool init = false) : m_is_set(init) {}
     ~lightweight_manual_reset_event() = default;
     void set() noexcept;
     void reset() noexcept;

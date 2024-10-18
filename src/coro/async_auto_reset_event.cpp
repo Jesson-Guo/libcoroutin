@@ -107,7 +107,7 @@ auto coro::async_auto_reset_event_operation::await_suspend(std::coroutine_handle
         static_cast<std::uint64_t>(1) << 32, std::memory_order_acq_rel);
 
     if (old_state != 0 && static_cast<std::uint32_t>(old_state >> 32) == 0) {
-        m_event->resume_waiters(old_state + static_cast<std::uint64_t>(1) << 32);
+        m_event->resume_waiters(old_state + (static_cast<std::uint64_t>(1) << 32));
     }
 
     return m_ref_count.fetch_sub(1, std::memory_order_acquire) != 1;
