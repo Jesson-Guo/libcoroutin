@@ -34,15 +34,10 @@ public:
     public:
         explicit schedule_operation(thread_pool* pool, std::function<void()> func = nullptr) noexcept
             : m_thread_pool(pool)
-            , m_next(nullptr)
             , m_func(std::move(func)) {}
 
-        bool await_ready() noexcept {
-            return false;
-        }
-
+        bool await_ready() noexcept { return false; }
         void await_suspend(std::coroutine_handle<> handle) noexcept;
-
         void await_resume() noexcept {}
 
         void execute() {
@@ -61,9 +56,12 @@ public:
 
         thread_pool* m_thread_pool;
         std::coroutine_handle<> m_awaiting_handle;
-        schedule_operation* m_next;
         std::function<void()> m_func;
     };
+
+    std::uint32_t thread_count() const noexcept { return m_thread_count; }
+
+    schedule_operation schedule() noexcept { return schedule_operation{ this }; }
 
     void schedule(std::function<void()> func) noexcept;
 
@@ -79,6 +77,7 @@ private:
     const std::uint32_t m_thread_count;
     std::unique_ptr<thread_state[]> m_thread_states;
 
+    std::thread m_daemon_thread;
     std::vector<std::thread> m_threads;
 
     std::atomic<bool> m_stop;
@@ -92,7 +91,6 @@ private:
     std::atomic<std::size_t> m_global_head;
     std::atomic<std::size_t> m_global_tail;
 
-    std::atomic<std::uint32_t> m_queued_work_count;
     std::atomic<std::uint32_t> m_sleep_thread_count;
 
     /**
@@ -103,6 +101,8 @@ private:
      *   - 唤醒逻辑则通过 ` notify_intent_to_sleep` 和 ` sleep_until_woken` 来实现。
      */
     void run_worker_thread(std::uint32_t thread_id) noexcept;
+    //
+    // void run_daemon_thread() noexcept;
 
     /**
      * 将 `m_stop` 设置为 `true`，并尝试唤醒所有线程，等待线程完成后再退出。

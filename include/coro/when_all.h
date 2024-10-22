@@ -26,11 +26,11 @@ template<
 		std::conjunction_v<is_awaitable<detail::unwrap_reference_t<std::remove_reference_t<AWAITABLES>>>...>,
 		int> = 0>
 [[nodiscard]] auto when_all(AWAITABLES&&... awaitables) {
-	return fmap([]<typename T0>(T0&& task_tuple) {
-		return std::apply([]<typename... T1>(T1&&... tasks) {
-			return std::make_tuple(static_cast<T0>(tasks).non_void_result()...);
-		}, static_cast<T0>(task_tuple));
-	}, when_all_ready(std::forward<AWAITABLES>(awaitables)...));
+    return fmap([]<typename TT>(TT&& task_tuple) {
+        return std::apply([]<typename... T>(T&&... tasks) {
+            return std::make_tuple(static_cast<decltype(tasks)>(tasks).non_void_result()...);
+        }, static_cast<decltype(task_tuple)>(task_tuple));
+    }, when_all_ready(std::forward<AWAITABLES>(awaitables)...));
 }
 
 //////////

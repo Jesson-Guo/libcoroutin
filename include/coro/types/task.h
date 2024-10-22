@@ -11,6 +11,7 @@
 
 #include <coroutine>
 #include <exception>
+#include <cassert>
 
 namespace coro {
 
@@ -208,14 +209,14 @@ public:
     }
 
     auto is_ready() const noexcept -> bool {
-        return !m_handle && m_handle.done();
+        return !m_handle || m_handle.done();
     }
 
-    auto operator co_await() const & noexcept {
+    auto operator co_await() const & {
         struct awaitable : awaitable_base {
             using awaitable_base::awaitable_base;
 
-            decltype(auto) await_resume() noexcept {
+            decltype(auto) await_resume() {
                 if (!this->m_handle) {
                     throw broken_promise{};
                 }
@@ -225,10 +226,10 @@ public:
         return awaitable{m_handle};
     }
 
-    auto operator co_await() const && noexcept {
+    auto operator co_await() const && {
         struct awaitable : awaitable_base {
             using awaitable_base::awaitable_base;
-            decltype(auto) await_resume() noexcept {
+            decltype(auto) await_resume() {
                 if (!this->m_handle) {
                     throw broken_promise{};
                 }
@@ -266,9 +267,9 @@ task<T&> task_promise<T&>::get_return_object() noexcept {
 
 }
 
-template<typename AWAITABLE>
-auto make_task(AWAITABLE awaitable) -> task<detail::remove_rvalue_reference_t<typename detail::awaitable_traits<AWAITABLE>::await_result_t>> {
-    co_return co_await static_cast<AWAITABLE&&>(awaitable);
+template<typename awaitable_type>
+auto make_task(awaitable_type awaitable) -> task<detail::remove_rvalue_reference_t<typename detail::awaitable_traits<awaitable_type>::await_result_t>> {
+    co_return co_await static_cast<awaitable_type&&>(awaitable);
 }
 
 }

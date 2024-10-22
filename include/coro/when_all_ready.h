@@ -20,20 +20,20 @@
 namespace coro {
 
 template<
-    typename... AWAITABLES,
+    typename... awaitable_type,
     std::enable_if_t<std::conjunction_v<
-        is_awaitable<detail::unwrap_reference_t<std::remove_reference_t<AWAITABLES>>>...>, int> = 0>
-[[nodiscard]] auto when_all_ready(AWAITABLES&&... awaitables) {
+        is_awaitable<detail::unwrap_reference_t<std::remove_reference_t<awaitable_type>>>...>, int> = 0>
+[[nodiscard]] auto when_all_ready(awaitable_type&&... awaitables) {
     return detail::when_all_ready_awaitable<std::tuple<detail::when_all_task<
-        typename detail::awaitable_traits<detail::unwrap_reference_t<std::remove_reference_t<AWAITABLES>>>::await_result_t>...>>(
-            std::make_tuple(detail::make_when_all_task(std::forward<AWAITABLES>(awaitables))...));
+        typename detail::awaitable_traits<detail::unwrap_reference_t<std::remove_reference_t<awaitable_type>>>::await_result_t>...>>(
+            std::make_tuple(detail::make_when_all_task(std::forward<awaitable_type>(awaitables))...));
 }
 
 template<
-    typename AWAITABLE,
-    typename RESULT = typename detail::awaitable_traits<detail::unwrap_reference_t<AWAITABLE>>::await_result_t>
-[[nodiscard]] auto when_all_ready(std::vector<AWAITABLE> awaitables) {
-    std::vector<detail::when_all_task<RESULT>> tasks;
+    typename awaitable_type,
+    typename result = typename detail::awaitable_traits<detail::unwrap_reference_t<awaitable_type>>::await_result_t>
+[[nodiscard]] auto when_all_ready(std::vector<awaitable_type> awaitables) {
+    std::vector<detail::when_all_task<result>> tasks;
 
     tasks.reserve(awaitables.size());
 
@@ -41,25 +41,25 @@ template<
         tasks.emplace_back(detail::make_when_all_task(std::move(awaitable)));
     }
 
-    return detail::when_all_ready_awaitable<std::vector<detail::when_all_task<RESULT>>>(std::move(tasks));
+    return detail::when_all_ready_awaitable<std::vector<detail::when_all_task<result>>>(std::move(tasks));
 }
 
-// TODO: Generalise this from vector<AWAITABLE> to arbitrary sequence of awaitable.
-template<
-    typename TASK_CONTAINER,
-    typename AWAITABLE = typename TASK_CONTAINER::value_type,
-    typename RESULT = typename detail::awaitable_traits<detail::unwrap_reference_t<AWAITABLE>>::await_result_t>
-[[nodiscard]] auto when_all_ready(TASK_CONTAINER awaitables) {
-    TASK_CONTAINER<detail::when_all_task<RESULT>> tasks;
-
-    tasks.reserve(awaitables.size());
-
-    for (auto& awaitable : awaitables) {
-        tasks.emplace_back(detail::make_when_all_task(std::move(awaitable)));
-    }
-
-    return detail::when_all_ready_awaitable<std::vector<detail::when_all_task<RESULT>>>(std::move(tasks));
-}
+// TODO: Generalise this from vector<awaitable_type> to arbitrary sequence of awaitable.
+// template<
+//     typename task_container,
+//     typename awaitable_type = typename task_container::value_type,
+//     typename result = typename detail::awaitable_traits<detail::unwrap_reference_t<awaitable_type>>::await_result_t>
+// [[nodiscard]] auto when_all_ready(task_container awaitables) {
+//     std::vector<detail::when_all_task<result>> tasks;
+//
+//     tasks.reserve(awaitables.size());
+//
+//     for (auto& awaitable : awaitables) {
+//         tasks.emplace_back(detail::make_when_all_task(std::move(awaitable)));
+//     }
+//
+//     return detail::when_all_ready_awaitable<std::vector<detail::when_all_task<result>>>(std::move(tasks));
+// }
 
 }
 

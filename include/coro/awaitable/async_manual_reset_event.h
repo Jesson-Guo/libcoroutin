@@ -26,6 +26,7 @@ public:
     async_manual_reset_event_operation operator co_await() const noexcept;
 
     auto is_set() const noexcept -> bool {
+        auto a = m_state.load(std::memory_order_acquire) == static_cast<const void*>(this);
         return m_state.load(std::memory_order_acquire) == static_cast<const void*>(this);
     }
 
@@ -33,7 +34,7 @@ public:
 
     auto reset() noexcept -> void {
         void* expected = this;
-        m_state.compare_exchange_strong(expected, this, std::memory_order_acq_rel);
+        m_state.compare_exchange_strong(expected, nullptr, std::memory_order_acq_rel);
     }
 
 private:

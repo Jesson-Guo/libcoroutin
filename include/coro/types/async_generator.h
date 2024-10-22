@@ -9,24 +9,21 @@
 #include <exception>
 #include <future>
 
-namespace coro {
-
+namespace coro
+{
 template<typename T>
 class async_generator;
 
-namespace detail {
-
+namespace detail
+{
 template<typename T>
 class async_generator_iterator;
-
 class async_generator_yield_operation;
-
 class async_generator_advance_operation;
 
 class async_generator_promise_base {
 public:
     async_generator_promise_base() noexcept : m_exception(nullptr) {}
-
     async_generator_promise_base(const async_generator_promise_base& other) = delete;
     async_generator_promise_base& operator=(const async_generator_promise_base& other) = delete;
 
@@ -51,8 +48,7 @@ public:
     }
 
 protected:
-    async_generator_yield_operation internal_yield_value() const noexcept;
-
+    async_generator_yield_operation internal_yield_value() noexcept;
     void* m_current_value;
 
 private:
@@ -69,7 +65,7 @@ public:
 
     auto await_ready() noexcept -> bool {return false;}
 
-    auto await_suspend(std::coroutine_handle<> producer) const noexcept -> std::coroutine_handle<> {
+    auto await_suspend(std::coroutine_handle<> producer) noexcept -> std::coroutine_handle<> {
         return m_consumer;
     }
 
@@ -79,7 +75,7 @@ private:
     std::coroutine_handle<> m_consumer;
 };
 
-inline auto async_generator_promise_base::internal_yield_value() const noexcept -> async_generator_yield_operation {
+inline auto async_generator_promise_base::internal_yield_value() noexcept -> async_generator_yield_operation {
     return async_generator_yield_operation{m_consumer_handle};
 }
 
@@ -90,14 +86,16 @@ inline auto async_generator_promise_base::final_suspend() noexcept -> async_gene
 
 class async_generator_advance_operation {
 protected:
-    async_generator_advance_operation() noexcept : m_promise(nullptr), m_producer_handle(nullptr) {}
+    explicit async_generator_advance_operation(std::nullptr_t) noexcept
+        : m_promise(nullptr)
+        , m_producer_handle(nullptr) {}
 
-    async_generator_advance_operation(
-        async_generator_promise_base& promise,
-        const std::coroutine_handle<> producer) noexcept : m_promise(std::addressof(promise)), m_producer_handle(producer) {}
+    async_generator_advance_operation(async_generator_promise_base& promise, const std::coroutine_handle<> producer) noexcept
+        : m_promise(std::addressof(promise))
+        , m_producer_handle(producer) {}
 
 public:
-    auto await_ready() noexcept -> bool {return false;}
+    auto await_ready() const noexcept -> bool {return false;}
 
     auto await_suspend(std::coroutine_handle<> consumer) noexcept -> std::coroutine_handle<> {
         m_promise->m_consumer_handle = consumer;
@@ -111,10 +109,9 @@ protected:
 
 template<typename T>
 class async_generator_promise final : public async_generator_promise_base {
-public:
     using value_type = std::remove_reference_t<T>;
+public:
     async_generator_promise() noexcept = default;
-
     async_generator<T> get_return_object() noexcept;
 
     auto yield_value(value_type& value) noexcept -> async_generator_yield_operation {
@@ -135,7 +132,6 @@ template<typename T>
 class async_generator_promise<T&&> final : public async_generator_promise_base {
 public:
     async_generator_promise() noexcept = default;
-
     async_generator<T> get_return_object() noexcept;
 
     auto yield_value(T&& value) noexcept -> async_generator_yield_operation {
@@ -152,9 +148,10 @@ template<typename T>
 class async_generator_increment_operation final : public async_generator_advance_operation {
 public:
     explicit async_generator_increment_operation(async_generator_iterator<T>& it) noexcept
-        : async_generator_advance_operation(it.m_handle.promise(), it.m_handle), m_iterator(it) {}
+        : async_generator_advance_operation(it.m_handle.promise(), it.m_handle)
+        , m_iterator(it) {}
 
-    auto await_resume() noexcept -> async_generator_iterator<T>&;
+    auto await_resume() -> async_generator_iterator<T>&;
 
 private:
     async_generator_iterator<T>& m_iterator;
@@ -162,39 +159,42 @@ private:
 
 template<typename T>
 class async_generator_iterator final {
-public:
     using promise_type = async_generator_promise<T>;
+public:
+    using iterator_category = std::input_iterator_tag;
+    using difference_type = std::ptrdiff_t;
     using value_type = std::remove_reference_t<T>;
+    using reference = std::add_lvalue_reference_t<T>;
     using pointer = std::add_pointer_t<value_type>;
-    using reference = std::add_lvalue_reference_t<value_type>;
 
-    async_generator_iterator() noexcept : m_handle(nullptr) {}
-    explicit async_generator_iterator(std::coroutine_handle<promise_type> handle) noexcept : m_handle(handle) {}
+    async_generator_iterator(std::nullptr_t) noexcept : m_handle(nullptr) {}
+    async_generator_iterator(std::coroutine_handle<promise_type> handle) noexcept : m_handle(handle) {}
 
-    auto operator++() noexcept -> async_generator_increment_operation<T> {
-        return async_generator_increment_operation<T>{m_handle};
+    async_generator_increment_operation<T> operator++() noexcept {
+        return async_generator_increment_operation<T>{ *this };
     }
 
-    auto operator*() const noexcept -> reference {
+    reference operator*() const noexcept {
         return m_handle.promise().value();
     }
 
-    auto operator==(const async_generator_iterator& it) const noexcept -> bool {
-        return m_handle == it.m_handle;
+    bool operator==(const async_generator_iterator& other) const noexcept {
+        return m_handle == other.m_handle;
     }
 
-    auto operator!=(const async_generator_iterator& it) const noexcept -> bool {
-        return m_handle != it.m_handle;
+    bool operator!=(const async_generator_iterator& other) const noexcept {
+        return !(*this == other);
     }
+
 private:
     friend class async_generator_increment_operation<T>;
     std::coroutine_handle<promise_type> m_handle;
 };
 
 template<typename T>
-auto async_generator_increment_operation<T>::await_resume() noexcept -> async_generator_iterator<T>& {
+auto async_generator_increment_operation<T>::await_resume() -> async_generator_iterator<T>& {
     if (m_promise->is_finished()) {
-        m_iterator = async_generator_increment_operation<T>{nullptr};
+        m_iterator = async_generator_iterator<T>{nullptr};
         m_promise->rethrow_if_unhandled_exception();
     }
     return m_iterator;
@@ -202,28 +202,28 @@ auto async_generator_increment_operation<T>::await_resume() noexcept -> async_ge
 
 template<typename T>
 class async_generator_begin_operation final : public async_generator_advance_operation {
+	using promise_type = async_generator_promise<T>;
+	using handle_type = std::coroutine_handle<promise_type>;
 public:
-    using promise_type = async_generator_promise<T>;
-
-    async_generator_begin_operation() noexcept = default;
-
-    explicit async_generator_begin_operation(async_generator_iterator<T>& it) noexcept
-        : async_generator_advance_operation(it.m_handle.promise(), it.m_handle) {}
+    explicit async_generator_begin_operation(std::nullptr_t) : async_generator_advance_operation(nullptr) {}
+    explicit async_generator_begin_operation(std::coroutine_handle<promise_type> producer_handle) noexcept
+        : async_generator_advance_operation(producer_handle.promise(), producer_handle) {}
 
     auto await_ready() noexcept -> bool {
-        return !m_promise || async_generator_advance_operation::await_ready();
+        return m_promise == nullptr || async_generator_advance_operation::await_ready();
     }
 
-    auto await_resume() noexcept -> async_generator_iterator<T>& {
-        if (!m_promise) {
+    auto await_resume() -> async_generator_iterator<T> {
+        if (m_promise == nullptr) {
             return async_generator_iterator<T>{nullptr};
         }
         if (m_promise->is_finished()) {
             m_promise->rethrow_if_unhandled_exception();
             return async_generator_iterator<T>{nullptr};
         }
-        return async_generator_iterator<T>{std::coroutine_handle<promise_type>::from_promise(
-            *static_cast<promise_type*>(m_promise))};
+        return async_generator_iterator<T>{
+            std::coroutine_handle<promise_type>::from_promise(*static_cast<promise_type*>(m_promise))
+        };
     }
 };
 
@@ -239,8 +239,8 @@ public:
 
     explicit async_generator(std::coroutine_handle<promise_type> handle) noexcept : m_handle(handle) {}
 
-    explicit async_generator(promise_type& promise) noexcept : m_handle(
-        std::coroutine_handle<promise_type>::from_promise(promise)) {}
+    explicit async_generator(promise_type& promise) noexcept
+        : m_handle(std::coroutine_handle<promise_type>::from_promise(promise)) {}
 
     async_generator(async_generator&& other) noexcept : m_handle(other.m_handle) {
         other.m_handle = nullptr;
@@ -261,14 +261,14 @@ public:
         }
     }
 
-    auto begin() noexcept -> detail::async_generator_begin_operation<T> {
-        if (m_handle) {
-            return detail::async_generator_begin_operation<T>{m_handle};
+    auto begin() noexcept {
+        if (!m_handle) {
+            return detail::async_generator_begin_operation<T>{nullptr};
         }
-        return detail::async_generator_begin_operation<T>{nullptr};
+        return detail::async_generator_begin_operation<T>{m_handle};
     }
 
-    auto end() noexcept -> iterator {
+    auto end() noexcept {
         return iterator{nullptr};
     }
 
@@ -288,6 +288,26 @@ async_generator<T> async_generator_promise<T&&>::get_return_object() noexcept {
     return async_generator<T>{std::move(*this)};
 }
 
+}
+
+template<typename FUNC, typename T>
+async_generator<std::invoke_result_t<FUNC&, decltype(*std::declval<typename async_generator<T>::iterator&>())>>
+fmap(FUNC func, async_generator<T> source) {
+    static_assert(
+        !std::is_reference_v<FUNC>,
+        "Passing by reference to async_generator<T> coroutine is unsafe. "
+        "Use std::ref or std::cref to explicitly pass by reference.");
+
+    // Explicitly hand-coding the loop here rather than using range-based
+    // for loop since it's difficult to std::forward<???> the value of a
+    // range-based for-loop, preserving the value category of operator*
+    // return-value.
+    auto it = co_await source.begin();
+    const auto itEnd = source.end();
+    while (it != itEnd) {
+        co_yield std::invoke(func, *it);
+        (void)co_await ++it;
+    }
 }
 
 }

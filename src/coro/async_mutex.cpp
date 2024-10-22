@@ -13,41 +13,44 @@ auto coro::async_mutex::scoped_lock_async() noexcept -> async_mutex_scoped_lock_
 }
 
 auto coro::async_mutex::unlock() noexcept -> void {
-    std::uintptr_t old_state = m_state.load(std::memory_order_acquire);
-    while (true) {
-        if (old_state != locked_no_waiters) {
-            if (m_state.compare_exchange_weak(
-                old_state,
-                not_locked,
-                std::memory_order_release,
-                std::memory_order_relaxed)) {
-                // unlocked successfully
-                return;
-            }
-        }
-        else if (old_state == not_locked) {
-            // already unlocked
-            assert(false && "Unlocked called on an unlocked mutex");
+    // 检查当前锁是否被持有
+    assert(m_state.load(std::memory_order_relaxed) != not_locked);
+
+    // 取出等待者列表
+    async_mutex_lock_operation* waiters_head = m_waiters;
+    if (waiters_head == nullptr) {
+        // 没有等待者，尝试将状态设置为 not_locked
+        std::uintptr_t old_state = locked_no_waiters;
+        if (m_state.compare_exchange_strong(
+            old_state,
+            not_locked,
+            std::memory_order_release,
+            std::memory_order_relaxed)) {
+            // 解锁成功
             return;
         }
-        else {
-            auto* waiter = reinterpret_cast<async_mutex_lock_operation*>(old_state);
-            auto* next_waiter = waiter->m_next;
 
-            std::uintptr_t new_state = next_waiter != nullptr ?
-                reinterpret_cast<std::uintptr_t>(next_waiter) : locked_no_waiters;
+        // 有新的等待者，获取等待者列表
+        old_state = m_state.exchange(locked_no_waiters, std::memory_order_acquire);
 
-            if (m_state.compare_exchange_weak(
-                old_state,
-                new_state,
-                std::memory_order_release,
-                std::memory_order_relaxed)) {
-                // Successfully transferred lock to waiter
-                waiter->m_awaiter.resume();
-                return;
-            }
-        }
+        assert(old_state != locked_no_waiters && old_state != not_locked);
+
+        // 将等待者列表反转，准备恢复等待者
+        auto* next = reinterpret_cast<async_mutex_lock_operation*>(old_state);
+        do {
+            auto* temp = next->m_next;
+            next->m_next = waiters_head;
+            waiters_head = next;
+            next = temp;
+        } while (next != nullptr);
     }
+
+    assert(waiters_head != nullptr);
+
+    m_waiters = waiters_head->m_next;
+
+    // 恢复等待的协程，传递锁的所有权
+    waiters_head->m_awaiter.resume();
 }
 
 auto coro::async_mutex_lock_operation::await_suspend(std::coroutine_handle<> awaiter) noexcept -> bool {
@@ -70,7 +73,7 @@ auto coro::async_mutex_lock_operation::await_suspend(std::coroutine_handle<> awa
                 old_state,
                 reinterpret_cast<std::uintptr_t>(this),
                 std::memory_order_release,
-                std::memory_order_relaxed)) {
+                std::memory_order_acquire)) {
                 // add to waiting list
                 return true;
             }

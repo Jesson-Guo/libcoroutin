@@ -6,8 +6,9 @@
 #define GENERATOR_H
 
 #include <coroutine>
+#include <utility>
 #include <exception>
-#include <future>
+#include <functional>
 
 namespace coro {
 
@@ -47,7 +48,7 @@ public:
         m_exception = std::current_exception();
     }
 
-    auto return_void() noexcept {}
+    auto return_void() {}
 
     reference_type value() const noexcept {
         return static_cast<reference_type>(*m_value);
@@ -67,7 +68,7 @@ private:
     std::exception_ptr m_exception;
 };
 
-struct generator_sentinel;
+struct generator_sentinel{};
 
 template<typename T>
 class generator_iterator {
@@ -79,7 +80,7 @@ public:
     using pointer = typename generator_promise<T>::pointer_type;
     using reference = typename generator_promise<T>::reference_type;
 
-    generator_iterator() = default;
+    generator_iterator() noexcept : m_handle(nullptr) {}
 
     explicit generator_iterator(coroutine_handle handle) noexcept : m_handle(handle) {}
 
@@ -96,7 +97,7 @@ public:
     }
 
     friend bool operator!=(generator_sentinel s, const generator_iterator& it) noexcept {
-        return !(it == s);
+        return it != s;
     }
 
     generator_iterator& operator++() {
@@ -147,7 +148,10 @@ public:
         }
     }
 
-    generator& operator=(generator& gen) noexcept = delete;
+    generator& operator=(generator gen) noexcept {
+        std::swap(m_handle, gen.m_handle);
+        return *this;
+    }
 
     generator& operator=(generator&& gen) noexcept {
         m_handle = gen.m_handle;
@@ -155,7 +159,7 @@ public:
         return *this;
     }
 
-    auto begin() noexcept -> iterator {
+    auto begin() -> iterator {
         if (m_handle) {
             m_handle.resume();
             if (m_handle.done()) {
@@ -180,7 +184,16 @@ template<typename T>
 auto generator_promise<T>::get_return_object() noexcept -> generator<T> {
     return generator<T>{std::coroutine_handle<generator_promise<T>>::from_promise(*this)};
 }
+
 }
+
+template<typename FUNC, typename T>
+generator<std::invoke_result_t<FUNC&, typename generator<T>::iterator::reference>> fmap(FUNC func, generator<T> source) {
+    for (auto&& value : source) {
+        co_yield std::invoke(func, static_cast<decltype(value)>(value));
+    }
+}
+
 }
 
 #endif //GENERATOR_H

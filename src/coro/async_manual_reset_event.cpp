@@ -9,7 +9,7 @@ coro::async_manual_reset_event_operation coro::async_manual_reset_event::operato
 }
 
 auto coro::async_manual_reset_event::set() noexcept -> void {
-    void* const old_state = m_state.exchange(this, std::memory_order_acq_rel);
+    void* old_state = m_state.exchange(this, std::memory_order_acq_rel);
     if (old_state != static_cast<void*>(this)) {
         auto* waiter = static_cast<async_manual_reset_event_operation*>(old_state);
         while (waiter) {
@@ -28,19 +28,17 @@ auto coro::async_manual_reset_event_operation::await_suspend(std::coroutine_hand
     m_awaiter = awaiter;
     void* old_state = m_event.m_state.load(std::memory_order_acquire);
 
-    while (true) {
-        if (old_state != &m_event) {
+    do {
+        if (old_state == &m_event) {
             // event is set, no need suspending.
             return false;
         }
         // add to waiting list
         m_next = static_cast<async_manual_reset_event_operation*>(old_state);
-        if (m_event.m_state.compare_exchange_weak(
-            old_state,
-            this,
-            std::memory_order_release,
-            std::memory_order_acquire)) {
-            return true;
-        }
-    }
+    } while (!m_event.m_state.compare_exchange_weak(
+        old_state,
+        this,
+        std::memory_order_release,
+        std::memory_order_acquire));
+    return true;
 }

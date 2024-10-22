@@ -121,19 +121,19 @@ auto fmap(FUNC&& func) {
 
 template<typename T, typename FUNC>
 decltype(auto) operator|(T&& value, fmap_transform<FUNC>&& transform) {
-// Use ADL for finding fmap() overload.
+    // Use ADL for finding fmap() overload.
     return fmap(std::forward<FUNC>(transform.func), std::forward<T>(value));
 }
 
 template<typename T, typename FUNC>
 decltype(auto) operator|(T&& value, const fmap_transform<FUNC>& transform) {
-// Use ADL for finding fmap() overload.
+    // Use ADL for finding fmap() overload.
     return fmap(transform.func, std::forward<T>(value));
 }
 
 template<typename T, typename FUNC>
 decltype(auto) operator|(T&& value, fmap_transform<FUNC>& transform) {
-// Use ADL for finding fmap() overload.
+    // Use ADL for finding fmap() overload.
     return fmap(transform.func, std::forward<T>(value));
 }
 

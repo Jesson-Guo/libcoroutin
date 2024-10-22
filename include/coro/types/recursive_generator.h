@@ -7,10 +7,10 @@
 
 #include "generator.h"
 
-
 #include <coroutine>
 #include <exception>
 #include <future>
+#include <cassert>
 
 namespace coro {
 
@@ -23,7 +23,7 @@ public:
 
     class promise_type final {
     public:
-        promise_type() : m_value(nullptr), m_exception(nullptr), m_root(nullptr), m_node(nullptr) {}
+        promise_type() : m_value(nullptr), m_exception(nullptr), m_root(this), m_node(this) {}
 
         promise_type(const promise_type&) = delete;
         promise_type& operator=(const promise_type&) = delete;
@@ -53,17 +53,18 @@ public:
             return std::suspend_always{};
         }
 
+        auto yield_value(recursive_generator&& generator) noexcept {
+            return yield_value(generator);
+        }
+
         auto yield_value(recursive_generator& generator) noexcept {
             struct awaitable {
-                awaitable(promise_type* prom) : m_child_promise(prom) {}
-
+                explicit awaitable(promise_type* child_promise) : m_child_promise(child_promise) {}
                 auto await_ready() noexcept -> bool {
                     return this->m_child_promise == nullptr;
                 }
-
                 auto await_suspend(std::coroutine_handle<promise_type>) noexcept -> void {}
-
-                auto await_resume() noexcept -> void {
+                auto await_resume() const noexcept -> void {
                     if (this->m_child_promise) {
                         this->m_child_promise->throw_if_exception();
                     }
@@ -86,10 +87,6 @@ public:
             return awaitable{ nullptr };
         }
 
-        auto yield_value(recursive_generator&& generator) noexcept {
-            yield_value(std::forward<recursive_generator>(generator));
-        }
-
         template<typename U>
         auto await_transform(U&& value) = delete;
 
@@ -97,13 +94,13 @@ public:
             std::coroutine_handle<promise_type>::from_promise(*this).destroy();
         }
 
-        void throw_if_exception() const noexcept {
+        void throw_if_exception() const {
             if (m_exception) {
-                std::rethrow_exception(std::move(m_exception));
+                std::rethrow_exception(m_exception);
             }
         }
 
-        auto is_complete() const noexcept {
+        auto is_complete() noexcept {
             return std::coroutine_handle<promise_type>::from_promise(*this).done();
         }
 
@@ -184,7 +181,7 @@ public:
             return m_promise != it.m_promise;
         }
 
-        auto operator++() noexcept -> iterator& {
+        auto operator++() -> iterator& {
             assert(m_promise);
             assert(!m_promise->is_complete());
 
@@ -197,7 +194,7 @@ public:
             return *this;
         }
 
-        auto operator++(int) noexcept -> void {
+        auto operator++(int) -> void {
             (void)operator++();
         }
 
@@ -214,7 +211,7 @@ public:
         promise_type* m_promise;
     };
 
-    auto begin() noexcept -> iterator {
+    auto begin() -> iterator {
         if (m_promise) {
             m_promise->pull();
             if (!m_promise->is_complete()) {
@@ -233,6 +230,13 @@ private:
     friend class promise_type;
     promise_type* m_promise;
 };
+
+template<typename FUNC, typename T>
+generator<std::invoke_result_t<FUNC&, typename recursive_generator<T>::iterator::reference>> fmap(FUNC func, recursive_generator<T> source) {
+    for (auto&& value : source) {
+        co_yield std::invoke(func, static_cast<decltype(value)>(value));
+    }
+}
 
 }
 

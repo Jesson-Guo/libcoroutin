@@ -92,7 +92,7 @@ private:
 	template<std::size_t... INDICES>
 	void start_tasks(std::integer_sequence<std::size_t, INDICES...>) noexcept {
 		(void)std::initializer_list<int>{
-			std::get<INDICES>(m_tasks).start(m_counter), 0 ...
+			(std::get<INDICES>(m_tasks).start(m_counter), 0)...
 		};
 	}
 

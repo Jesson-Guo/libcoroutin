@@ -87,7 +87,7 @@ class sync_wait_task_promise<void> {
 public:
 	sync_wait_task_promise() noexcept {}
 
-	void start(:lightweight_manual_reset_event& event) {
+	void start(lightweight_manual_reset_event& event) {
 		m_event = &event;
 		coroutine_handle_t::from_promise(*this).resume();
 	}
@@ -157,19 +157,19 @@ private:
 };
 
 template<
-	typename AWAITABLE,
-	typename RESULT = typename awaitable_traits<AWAITABLE&&>::await_result_t,
+	typename awaitable_type,
+	typename RESULT = typename awaitable_traits<awaitable_type&&>::await_result_t,
 	std::enable_if_t<!std::is_void_v<RESULT>, int> = 0>
-sync_wait_task<RESULT> make_sync_wait_task(AWAITABLE&& awaitable) {
-	co_yield co_await std::forward<AWAITABLE>(awaitable);
+sync_wait_task<RESULT> make_sync_wait_task(awaitable_type&& awaitable) {
+	co_yield co_await std::forward<awaitable_type>(awaitable);
 }
 
 template<
-	typename AWAITABLE,
-	typename RESULT = typename awaitable_traits<AWAITABLE&&>::await_result_t,
+	typename awaitable_type,
+	typename RESULT = typename awaitable_traits<awaitable_type&&>::await_result_t,
 	std::enable_if_t<std::is_void_v<RESULT>, int> = 0>
-sync_wait_task<void> make_sync_wait_task(AWAITABLE&& awaitable) {
-	co_await std::forward<AWAITABLE>(awaitable);
+sync_wait_task<void> make_sync_wait_task(awaitable_type&& awaitable) {
+	co_await std::forward<awaitable_type>(awaitable);
 }
 
 }
