@@ -292,3 +292,5 @@ TEST_CASE("cancellation registration single-threaded performance") {
 	report("Batch10", time2, 10 * iteration_count);
 	report("Batch50", time3, 50 * iteration_count);
 }
+
+TEST_SUITE_END();
