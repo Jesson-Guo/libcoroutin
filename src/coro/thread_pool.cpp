@@ -11,144 +11,177 @@ thread_local thread_pool* thread_pool::s_cur_thread_pool = nullptr;
 
 class thread_pool::thread_state {
 public:
-    thread_state()
-        : m_local_queue(std::make_unique<std::atomic<schedule_operation*>[]>(local_queue_size))
-        , m_mask(local_queue_size-1)
-        , m_head(0)
-        , m_tail(0)
-        , m_is_sleep(false) {}
+	thread_state()
+		: m_local_queue(std::make_unique<std::atomic<schedule_operation*>[]>(local_queue_size))
+		, m_mask(local_queue_size - 1)
+		, m_head(0)
+		, m_tail(0)
+		, m_is_sleep(false) {}
 
-    auto try_wakeup() -> bool {
-        if (m_is_sleep.load(std::memory_order_seq_cst)) {
-            if (m_is_sleep.exchange(false, std::memory_order_seq_cst)) {
-                m_wakeup_event.set();
-                return true;
-            }
-        }
-        return false;
-    }
+	bool try_wakeup() {
+		if (m_is_sleep.load(std::memory_order_seq_cst)) {
+			if (m_is_sleep.exchange(false, std::memory_order_seq_cst)) {
+				try {
+					m_wakeup_event.set();
+				}
+				catch (...) {
+					// TODO: What to do
+				}
+				return true;
+			}
+		}
 
-    auto notify_intent_to_sleep() noexcept -> void {
-        m_is_sleep.store(true, std::memory_order_relaxed);
-    }
+		return false;
+	}
 
-    auto sleep_until_woken() noexcept -> void {
-        try {
-            m_wakeup_event.wait();
-        }
-        catch (...) {
-            using namespace std::chrono_literals;
-            std::this_thread::sleep_for(1ms);
-        }
-    }
+	void notify_intent_to_sleep() noexcept {
+		m_is_sleep.store(true, std::memory_order_relaxed);
+	}
 
-    auto has_queued_work() noexcept -> bool {
-        std::scoped_lock lock(m_remote_mutex);
-        const auto tail = m_tail.load(std::memory_order_relaxed);
-        const auto head = m_head.load(std::memory_order_seq_cst);
-        return diff(head, tail) > 0;
-    }
+	void sleep_until_woken() noexcept {
+		try {
+			m_wakeup_event.wait();
+		}
+		catch (...) {
+			using namespace std::chrono_literals;
+			std::this_thread::sleep_for(1ms);
+		}
+	}
 
-    auto approx_has_queued_work() noexcept -> bool {
-        const auto tail = m_tail.load(std::memory_order_relaxed);
-        const auto head = m_head.load(std::memory_order_relaxed);
-        return diff(head, tail) > 0;
-    }
+	bool approx_has_queued_work() const noexcept {
+		return difference(
+			m_head.load(std::memory_order_relaxed),
+			m_tail.load(std::memory_order_relaxed)) > 0;
+	}
 
-    auto queue_size() noexcept -> size_t {
-        const auto tail = m_tail.load(std::memory_order_relaxed);
-        const auto head = m_head.load(std::memory_order_relaxed);
-        return static_cast<size_t>(diff(head, tail));
-    }
+	bool has_queued_work() noexcept {
+		std::scoped_lock lock{ m_remote_mutex };
+		auto tail = m_tail.load(std::memory_order_relaxed);
+		auto head = m_head.load(std::memory_order_seq_cst);
+		return difference(head, tail) > 0;
+	}
 
-    auto try_local_enqueue(schedule_operation* op) noexcept -> bool {
-        auto head = m_head.load(std::memory_order_relaxed);
-        auto tail = m_tail.load(std::memory_order_relaxed);
-        if (diff(head, tail) < static_cast<offset_t>(m_mask)) {
-            m_local_queue[head & m_mask].store(op, std::memory_order_relaxed);
-            m_head.store(head + 1, std::memory_order_seq_cst);
-            return true;
-        }
+	bool try_local_enqueue(schedule_operation*& op) noexcept {
+		// Head is only ever written-to by the current thread so we
+		// are safe to use relaxed memory order when reading it.
+		auto head = m_head.load(std::memory_order_relaxed);
+		auto tail = m_tail.load(std::memory_order_relaxed);
+		if (difference(head, tail) < static_cast<offset_t>(m_mask)) {
+			// There is space left in the local buffer.
+			m_local_queue[head & m_mask].store(op, std::memory_order_relaxed);
+			m_head.store(head + 1, std::memory_order_seq_cst);
+			return true;
+		}
 
-        if (m_mask + 1 >= max_local_queue_size) {
-            return false;
-        }
+		if (m_mask == local_queue_size) {
+			// No space in the buffer and we don't want to grow
+			// it any further.
+			return false;
+		}
 
-        const size_t new_size = (m_mask + 1) * 2;
-        std::unique_ptr<std::atomic<schedule_operation*>[]> new_local_queue{
-            new std::atomic<schedule_operation*>[new_size]
-        };
-        if (!new_local_queue) {
-            return false;
-        }
+		// Allocate the new buffer before taking out the lock so that
+		// we ensure we hold the lock for as short a time as possible.
+		const size_t new_size = (m_mask + 1) * 2;
 
-        if (!m_remote_mutex.try_lock()) {
-            return false;
-        }
+		std::unique_ptr<std::atomic<schedule_operation*>[]> new_local_queue{
+			new (std::nothrow) std::atomic<schedule_operation*>[new_size]
+		};
+		if (!new_local_queue) {
+			// Unable to allocate more memory.
+			return false;
+		}
 
-        std::scoped_lock lock{ std::adopt_lock, m_remote_mutex };
-        tail = m_tail.load(std::memory_order_relaxed);
+		if (!m_remote_mutex.try_lock()) {
+			// Don't wait to acquire the lock if we can't get it immediately.
+			// Fail and let it be enqueued to the global queue.
+			return false;
+		}
 
-        const size_t new_mask = new_size - 1;
-        for (auto i = tail; i != head; ++i) {
-            new_local_queue[i & new_mask].store(
-                m_local_queue[i & m_mask].load(std::memory_order_relaxed), std::memory_order_relaxed);
-        }
+		std::scoped_lock lock{ std::adopt_lock, m_remote_mutex };
 
-        new_local_queue[head & new_mask].store(op, std::memory_order_relaxed);
-        m_head.store(head + 1, std::memory_order_relaxed);
-        m_local_queue = std::move(new_local_queue);
-        m_mask = new_mask;
-        return true;
-    }
+		// We can now re-read tail, guaranteed that we are not seeing a stale version.
+		tail = m_tail.load(std::memory_order_relaxed);
 
-    auto try_local_pop() noexcept -> schedule_operation* {
-        auto head = m_head.load(std::memory_order_relaxed);
-        auto tail = m_tail.load(std::memory_order_relaxed);
-        if (diff(head, tail) <= 0) {
-            return nullptr;
-        }
+		// Copy the existing operations.
+		const size_t new_mask = new_size - 1;
+		for (size_t i = tail; i != head; ++i) {
+			new_local_queue[i & new_mask].store(
+				m_local_queue[i & m_mask].load(std::memory_order_relaxed),
+				std::memory_order_relaxed);
+		}
 
-        auto new_head = head - 1;
-        m_head.store(new_head, std::memory_order_seq_cst);
-        tail = m_tail.load(std::memory_order_seq_cst);
-        // 如果操作过程中head和tail被修改则恢复原样。
-        if (diff(new_head, tail) < 0) {
-            std::lock_guard lock{ m_remote_mutex };
-            tail = m_tail.load(std::memory_order_relaxed);
-            if (diff(new_head, tail) < 0) {
-                m_head.store(head, std::memory_order_relaxed);
-                return nullptr;
-            }
-        }
+		// Finally, write the new operation to the queue.
+		new_local_queue[head & new_mask].store(op, std::memory_order_relaxed);
 
-        return m_local_queue[new_head & m_mask].load(std::memory_order_relaxed);
-    }
+		m_head.store(head + 1, std::memory_order_relaxed);
+		m_local_queue = std::move(new_local_queue);
+		m_mask = new_mask;
+		return true;
+	}
 
-    auto try_steal() noexcept -> schedule_operation* {
-        if (!m_remote_mutex.try_lock()) {
-            return nullptr;
-        }
+	schedule_operation* try_local_pop() noexcept {
+		// Cheap, approximate, no memory-barrier check for emptiness
+		auto head = m_head.load(std::memory_order_relaxed);
+		auto tail = m_tail.load(std::memory_order_relaxed);
+		if (difference(head, tail) <= 0) {
+			// Empty
+			return nullptr;
+		}
 
-        std::scoped_lock lock{ std::adopt_lock, m_remote_mutex };
+		auto new_head = head - 1;
+		m_head.store(new_head, std::memory_order_seq_cst);
 
-        auto head = m_head.load(std::memory_order_seq_cst);
-        auto tail = m_tail.load(std::memory_order_seq_cst);
-        if (diff(head, tail) <= 0) {
-            return nullptr;
-        }
+		tail = m_tail.load(std::memory_order_seq_cst);
 
-        m_tail.store(tail + 1, std::memory_order_seq_cst);
-        head = m_head.load(std::memory_order_seq_cst);
-        if (diff(head, tail + 1) >= 0) {
-            return m_local_queue[tail & m_mask].load(std::memory_order_relaxed);
-        }
-        m_tail.store(tail, std::memory_order_relaxed);
-        return nullptr;
-    }
+		if (difference(new_head, tail) < 0) {
+			std::lock_guard lock{ m_remote_mutex };
+
+			// Use relaxed since the lock guarantees visibility of the writes
+			// that the remote steal thread performed.
+			tail = m_tail.load(std::memory_order_relaxed);
+
+			if (difference(new_head, tail) < 0) {
+				// The other thread didn't see our write and stole the last item.
+				// We need to restore the head back to it's old value.
+				// We hold the mutex so can just use relaxed memory order for this.
+				m_head.store(head, std::memory_order_relaxed);
+				return nullptr;
+			}
+		}
+
+		// We successfully acquired an item from the queue.
+		return m_local_queue[new_head & m_mask].load(std::memory_order_relaxed);
+	}
+
+	schedule_operation* try_steal(bool* lock_unavailable = nullptr) noexcept {
+		if (lock_unavailable == nullptr) {
+			m_remote_mutex.lock();
+		}
+		else if (!m_remote_mutex.try_lock()) {
+			*lock_unavailable = true;
+			return nullptr;
+		}
+
+		std::scoped_lock lock{ std::adopt_lock, m_remote_mutex };
+
+		auto tail = m_tail.load(std::memory_order_relaxed);
+		auto head = m_head.load(std::memory_order_seq_cst);
+		if (difference(head, tail) <= 0) {
+			return nullptr;
+		}
+
+		m_tail.store(tail + 1, std::memory_order_seq_cst);
+		head = m_head.load(std::memory_order_seq_cst);
+
+		if (difference(head, tail) > 0) {
+			return m_local_queue[tail & m_mask].load(std::memory_order_relaxed);
+		}
+		m_tail.store(tail, std::memory_order_seq_cst);
+		return nullptr;
+	}
 
 private:
-    using offset_t = std::make_signed_t<std::size_t>;
+	using offset_t = std::make_signed_t<std::size_t>;
 
     // Keep each thread's local queue under 1MB
     static constexpr std::size_t max_local_queue_size = 1024 * 1024 / sizeof(void*);
@@ -158,295 +191,272 @@ private:
         return static_cast<offset_t>(a - b);
     }
 
-    std::unique_ptr<std::atomic<schedule_operation*>[]> m_local_queue;
+	static constexpr offset_t difference(size_t a, size_t b) {
+		return static_cast<offset_t>(a - b);
+	}
 
-    std::size_t m_mask;
+	std::unique_ptr<std::atomic<schedule_operation*>[]> m_local_queue;
+	std::size_t m_mask;
 
-    std::atomic<std::size_t> m_head;
-    std::atomic<std::size_t> m_tail;
+	std::atomic<std::size_t> m_head;
+	std::atomic<std::size_t> m_tail;
 
-    std::atomic<bool> m_is_sleep;
+	std::atomic<bool> m_is_sleep;
+	spin_mutex m_remote_mutex;
 
-    spin_mutex m_remote_mutex;
-
-    auto_reset_event m_wakeup_event;
+	auto_reset_event m_wakeup_event;
 };
+
+void thread_pool::schedule_operation::await_suspend(std::coroutine_handle<> handle) noexcept {
+	m_awaiting_handle = handle;
+	m_thread_pool->schedule_impl(this);
+}
 
 thread_pool::thread_pool() : thread_pool(std::thread::hardware_concurrency()) {}
 
 thread_pool::thread_pool(std::uint32_t thread_count)
-    : m_thread_count(thread_count > 0 ? thread_count : 1)
-    , m_thread_states(std::make_unique<thread_state[]>(m_thread_count))
+	: m_thread_count(thread_count > 0 ? thread_count : 1)
+	, m_thread_states(std::make_unique<thread_state[]>(m_thread_count))
     , m_stop(false)
-    , m_global_queue(std::make_unique<std::atomic<schedule_operation*>[]>(global_queue_size))
-    , m_global_mask(global_queue_size - 1)
-    , m_global_head(0)
-    , m_global_tail(0)
-    , m_sleep_thread_count(0) {
-    m_threads.reserve(m_thread_count);
-    try {
-        for (auto i = 0u; i < m_thread_count; ++i) {
-            m_threads.emplace_back([this, i]() {
-                this->run_worker_thread(i);
-            });
-        }
-        // 启动守护线程
-        // m_daemon_thread = std::thread([this]() {
-        //     this->run_daemon_thread();
-        // });
-    }
-    catch (...) {
-        try {
-            shutdown();
-        }
-        catch (...) {
-            std::terminate();
-        }
-        throw;
-    }
+    , m_global_queue(global_queue_size)
+	, m_sleep_thread_count(0) {
+	m_threads.reserve(thread_count);
+	try {
+		for (std::uint32_t i = 0; i < m_thread_count; ++i) {
+			m_threads.emplace_back([this, i] { this->run_worker_thread(i); });
+		}
+	}
+	catch (...) {
+		try {
+			shutdown();
+		}
+		catch (...) {
+			std::terminate();
+		}
+		throw;
+	}
 }
 
 thread_pool::~thread_pool() {
-    shutdown();
-}
-
-void thread_pool::schedule_operation::await_suspend(std::coroutine_handle<> handle) noexcept {
-    m_awaiting_handle = handle;
-    m_thread_pool->schedule_impl(this);
-}
-
-void thread_pool::schedule(std::function<void()> func) noexcept {
-    auto op = std::make_unique<schedule_operation>(this, std::move(func));
-    schedule_impl(std::move(op).get()); // 将所有权转移给 schedule_impl
+	shutdown();
 }
 
 void thread_pool::run_worker_thread(std::uint32_t thread_id) noexcept {
-    auto& state = m_thread_states[thread_id];
-    s_cur_state = &state;
-    s_cur_thread_pool = this;
+	auto& local_state = m_thread_states[thread_id];
+	s_cur_state = &local_state;
+	s_cur_thread_pool = this;
 
-    auto try_get_remote = [&]() {
-        // 首先尝试从全局队列获取任务
-        auto* op = try_global_dequeue();
-        if (!op) {
-            // 如果全局队列为空，尝试从其他线程的局部队列窃取任务
-            op = try_steal(thread_id);
-        }
-        return op;
-    };
+	auto try_get_remote = [&]() {
+		auto* op = try_global_dequeue();
+		if (op == nullptr) {
+			op = try_steal(thread_id);
+		}
+		return op;
+	};
 
-    while (!m_stop.load(std::memory_order_relaxed)) {// 处理本地队列中的任务
-        schedule_operation* op;
+	while (true) {
+		schedule_operation* op;
 
-        while (true) {
-            op = state.try_local_pop();
-            if (!op) {
-                op = try_get_remote();
-                if (!op) {
-                    // 本地和全局队列均无任务，跳出循环
-                    break;
-                }
-            }
+		while (true) {
+			op = local_state.try_local_pop();
+			if (op == nullptr) {
+				op = try_get_remote();
+				if (op == nullptr) {
+					break;
+				}
+			}
 
-            op->execute();
-            if (op->m_func) {
-                delete op;
-            }
-        }
+			op->m_awaiting_handle.resume();
+		}
 
-        // 本地和远程队列均无任务，开始自旋等待新任务
-        spin_wait spinner;
-        bool found_op = false;
-        schedule_operation* remote_op = nullptr;
+		spin_wait spinner;
+		while (true) {
+			for (int i = 0; i < 30; ++i) {
+				if (is_shutdown()) {
+					return;
+				}
 
-        // 自旋30次，尝试获取新任务
-        for (int i = 0; i < 30; ++i) {
-            if (m_stop.load(std::memory_order_relaxed)) {
-                return; // 接收到关闭信号，退出线程
-            }
+				spinner.spin_one();
 
-            spinner.spin_one(); // 执行一次自旋等待
+				if (approx_has_queued_work(thread_id)) {
+					op = try_get_remote();
+					if (op != nullptr) {
+						goto normal_processing;
+					}
+				}
+			}
 
-            if (approx_has_queued_work(thread_id)) {
-                remote_op = try_get_remote();
-                if (remote_op) {
-                    found_op = true;
-                    break; // 找到任务，跳出自旋循环
-                }
-            }
-        }
+			notify_intent_to_sleep(thread_id);
 
-        if (found_op) {
-            // 找到任务，恢复协程执行
-            op = remote_op;
-            assert(op != nullptr);
+			if (has_queued_work(thread_id)) {
+				op = try_get_remote();
+				if (op != nullptr) {
+					try_clear_intent_to_sleep(thread_id);
+					goto normal_processing;
+				}
+			}
 
-            op->execute();
-            if (op->m_func) {
-                delete op;
-            }
+			if (is_shutdown()) {
+				return;
+			}
 
-            continue; // 继续主循环，处理更多任务
-        }
+			local_state.sleep_until_woken();
+		}
 
-        // 自旋结束后仍未找到任务，准备进入睡眠状态
-        // 通知其他线程我们即将进入睡眠
-        notify_intent_to_sleep(thread_id);
-
-        // 重新检查是否有新任务到来，以避免进入睡眠时有任务到来却无法唤醒自己
-        if (approx_has_queued_work(thread_id)) {
-            remote_op = try_get_remote();
-            if (remote_op) {
-                // 清除睡眠意图，防止其他线程误唤醒
-                try_clear_intent_to_sleep(thread_id);
-
-                // 找到任务，恢复协程执行
-                op = remote_op;
-                assert(op != nullptr);
-
-                op->execute();
-                if (op->m_func) {
-                    delete op;
-                }
-
-                continue; // 继续主循环，处理更多任务
-            }
-        }
-
-        if (m_stop.load(std::memory_order_relaxed)) {
-            return; // 接收到关闭信号，退出线程
-        }
-
-        // 进入睡眠，等待被唤醒
-        state.sleep_until_woken();
-    }
+	normal_processing:
+		assert(op != nullptr);
+		op->m_awaiting_handle.resume();
+	}
 }
-//
-// void thread_pool::run_daemon_thread() noexcept {
-//     while (!m_stop.load(std::memory_order_relaxed)) {
-//         // 等待一段时间，避免频繁检查
-//         std::this_thread::sleep_for(std::chrono::milliseconds(10));
-//
-//         // 检查是否有未处理的任务
-//         auto work_count = approx_total_work();
-//         auto sleep_threads_count = m_sleep_thread_count.load(std::memory_order_acquire);
-//
-//         if (work_count > 0 && sleep_threads_count > 0) {
-//             // 需要唤醒线程来处理任务
-//             auto num_threads = std::min(work_count, sleep_threads_count);
-//             wake_threads(num_threads);
-//         }
-//     }
-// }
 
 auto thread_pool::shutdown() -> void {
-    m_stop.store(true, std::memory_order_relaxed);
-    wake_threads(m_thread_count);
+	m_stop.store(true, std::memory_order_relaxed);
 
-    for (auto& thread : m_threads) {
-        if (thread.joinable()) {
-            thread.join();
-        }
-    }
+	for (std::uint32_t i = 0; i < m_threads.size(); ++i) {
+		auto& thread_state = m_thread_states[i];
+		assert(!thread_state.has_queued_work());
+		thread_state.try_wakeup();
+	}
 
-    // if (m_daemon_thread.joinable()) {
-    //     m_daemon_thread.join();
-    // }
+	for (auto& t : m_threads) {
+		t.join();
+	}
 }
 
 auto thread_pool::schedule_impl(schedule_operation* op) noexcept -> void {
-    if (s_cur_state && s_cur_thread_pool == this) {
-        if (s_cur_state->try_local_enqueue(op)) {
-            return;
-        }
-    }
-    try_global_enqueue(op);
+	if (s_cur_thread_pool != this || !s_cur_state->try_local_enqueue(op)) {
+        // try_global_enqueue(op);
+        while (!try_global_enqueue(op)) {
+            // 如果队列满了，等待一段时间后重试
+            std::this_thread::yield();
+	    }
+	}
 
-    auto work_count = approx_total_work();
-    auto sleep_threads_count = m_sleep_thread_count.load(std::memory_order_relaxed);
-    auto num_threads = std::min(work_count, sleep_threads_count);
-    wake_threads(num_threads);
+    const auto num_wakeup_threads = std::min(approx_total_work(), m_sleep_thread_count.load(std::memory_order_relaxed));
+    if (num_wakeup_threads > 0) {
+        wake_threads(num_wakeup_threads);
+    }
 }
 
 auto thread_pool::try_global_enqueue(schedule_operation* op) noexcept -> bool {
-    // Atomically increment the head and get the previous value
-    auto head = m_global_head.fetch_add(1, std::memory_order_acq_rel);
-
-    while (true) {
-        auto tail = m_global_tail.load(std::memory_order_acquire);
-        // Check if the queue is full
-        if (diff(head, tail) >= static_cast<std::make_signed_t<std::size_t>>(m_global_mask)) {
-            // Queue is full, cannot enqueue
-            // Roll back the head increment
-            m_global_head.fetch_sub(1, std::memory_order_acq_rel);
-            return false;
-        }
-
-        // Use compare_exchange to ensure only one thread writes to this position
-        schedule_operation* expected = nullptr;
-        if (m_global_queue[head & m_global_mask].compare_exchange_strong(
-            expected,
-            op,
-            std::memory_order_release,
-            std::memory_order_relaxed)) {
-            // Successfully enqueued
-            return true;
-        }
-        // Another thread has written to this position, need to try again
-        // Roll back the head increment
-        m_global_head.fetch_sub(1, std::memory_order_acq_rel);
-        // Yield and try again
-        std::this_thread::yield();
-        head = m_global_head.fetch_add(1, std::memory_order_acq_rel);
+    if (m_global_queue.push(op)) {
+        return true;
     }
+    return false;
+
+    // while (true) {
+    //     auto head = m_global_head.load(std::memory_order_acquire);
+    //     auto tail = m_global_tail.load(std::memory_order_acquire);
+    //     // 检查队列是否已满
+    //     if (diff(head, tail) >= static_cast<std::make_signed_t<std::size_t>>(m_global_mask)) {
+    //         // 队列已满，无法入队
+    //         return false;
+    //     }
+    //
+    //     // 尝试在队列的当前位置插入任务
+    //     schedule_operation* expected = nullptr;
+    //     if (m_global_queue[head & m_global_mask].compare_exchange_strong(
+    //         expected,
+    //         op,
+    //         std::memory_order_release,
+    //         std::memory_order_relaxed)) {
+    //         // 插入成功，尝试更新 m_global_head
+    //         if (m_global_head.compare_exchange_strong(
+    //             head,
+    //             head + 1,
+    //             std::memory_order_acq_rel,
+    //             std::memory_order_relaxed)) {
+    //             // 成功更新 m_global_head，入队完成
+    //             return true;
+    //         }
+    //         // 更新 m_global_head 失败，需要撤销插入的任务
+    //         m_global_queue[head & m_global_mask].store(nullptr, std::memory_order_relaxed);
+    //         continue; // 重试入队操作
+    //     }
+    //     // 当前位置已被其他线程占用，重试
+    //     std::this_thread::yield();
+    // }
 }
 
 auto thread_pool::try_global_dequeue() noexcept -> schedule_operation* {
-    auto tail = m_global_tail.fetch_add(1, std::memory_order_acq_rel);
-
-    spin_wait spinner;
-
-    while (true) {
-        auto head = m_global_head.load(std::memory_order_acquire);
-        // 检查队列是否为空
-        if (diff(head, tail) <= 0) {
-            // 队列为空，回滚 tail
-            m_global_tail.fetch_sub(1, std::memory_order_acq_rel);
-            return nullptr;
-        }
-
-        // 获取队列中的任务
-        auto index = tail & m_global_mask;
-        schedule_operation* op = m_global_queue[index].load(std::memory_order_acquire);
-
-        if (op) {
-            // 清理槽位
-            m_global_queue[index].store(nullptr, std::memory_order_release);
-            return op;
-        }
-        // 如果任务还没有写入完成，使用 spin_wait 进行等待
-        spinner.spin_one(); // 调用 spin_wait 的 spin_one() 逐步退让
-        if (spinner.next_spin_will_yield()) {
-            // 如果自旋已经进行了足够长的时间，进入短暂休眠
-            std::this_thread::sleep_for(std::chrono::microseconds(100));
-        }
-        // 如果仍未获取到任务，放弃本次尝试，回滚 tail
-        if (spinner.next_spin_will_yield()) {
-            m_global_tail.fetch_sub(1, std::memory_order_acq_rel);
-            return nullptr;
-        }
+    if (schedule_operation* op = nullptr; m_global_queue.pop(op)) {
+        return op;
     }
+    return nullptr;
+
+    // spin_wait spinner;
+    //
+    // while (true) {
+    //     auto head = m_global_head.load(std::memory_order_acquire);
+    //     auto tail = m_global_tail.load(std::memory_order_acquire);
+    //     // 检查队列是否为空
+    //     if (diff(head, tail) <= 0) {
+    //         // 队列为空，回滚 tail
+    //         return nullptr;
+    //     }
+    //
+    //     // 计算取出的位置索引
+    //     auto index = tail & m_global_mask;
+    //
+    //     // 尝试获取任务
+    //     schedule_operation* op = m_global_queue[index].load(std::memory_order_acquire);
+    //     if (op) {
+    //         // 尝试将当前位置的任务指针置为 nullptr
+    //         if (m_global_queue[index].compare_exchange_strong(
+    //             op,
+    //             nullptr,
+    //             std::memory_order_acq_rel,
+    //             std::memory_order_relaxed)) {
+    //             // 成功获取任务，尝试更新 m_global_tail
+    //             if (m_global_tail.compare_exchange_strong(
+    //                 tail,
+    //                 tail + 1,
+    //                 std::memory_order_acq_rel,
+    //                 std::memory_order_relaxed)) {
+    //                 // 成功更新 m_global_tail，出队完成
+    //                 return op;
+    //             }
+    //             // 更新 m_global_tail 失败，需要将任务指针恢复
+    //             m_global_queue[index].store(op, std::memory_order_relaxed);
+    //             continue; // 重试出队操作
+    //         }
+    //         // 当前位置的任务被其他线程修改，重试
+    //         std::this_thread::yield();
+    //         continue;
+    //     }
+    //     // 如果任务还没有写入完成，使用 spin_wait 进行等待
+    //     spinner.spin_one(); // 调用 spin_wait 的 spin_one() 逐步退让
+    //     if (spinner.next_spin_will_yield()) {
+    //         // 如果自旋已经进行了足够长的时间，进入短暂休眠
+    //         std::this_thread::yield();
+    //     }
+    // }
 }
 
 auto thread_pool::has_queued_work(std::uint32_t thread_id) noexcept -> bool {
-    std::scoped_lock lock(m_global_queue_mutex);
-    const auto head = m_global_head.load(std::memory_order_seq_cst);
-    const auto tail = m_global_tail.load(std::memory_order_seq_cst);
-    if (diff(head, tail) > 0) {
+    if (schedule_operation* op = nullptr; this->m_global_queue.pop(op)) {
+        this->m_global_queue.push(op);
         return true;
     }
 
-    for (auto i = 0u; i < m_thread_count; ++i) {
+	for (std::uint32_t i = 0; i < m_thread_count; ++i) {
+		if (i == thread_id) {
+		    continue;
+		}
+		if (m_thread_states[i].has_queued_work()) {
+			return true;
+		}
+	}
+
+	return false;
+}
+
+auto thread_pool::approx_has_queued_work(std::uint32_t thread_id) const noexcept -> bool {
+    if (!m_global_queue.empty()) {
+        return true;
+    }
+
+    for (std::uint32_t i = 0; i < m_thread_count; ++i) {
         if (i == thread_id) {
             continue;
         }
@@ -454,106 +464,134 @@ auto thread_pool::has_queued_work(std::uint32_t thread_id) noexcept -> bool {
             return true;
         }
     }
-    return false;
-}
 
-auto thread_pool::approx_has_queued_work(std::uint32_t thread_id) const noexcept -> bool {
-    const auto head = m_global_head.load(std::memory_order_relaxed);
-    const auto tail = m_global_tail.load(std::memory_order_relaxed);
-    if (diff(head, tail) > 0) {
-        return true;
-    }
-
-    for (auto i = 0u; i < m_thread_count; ++i) {
-        if (i == thread_id) {
-            continue;
-        }
-        if (m_thread_states[i].approx_has_queued_work()) {
-            return true;
-        }
-    }
     return false;
 }
 
 auto thread_pool::approx_total_work() const noexcept -> std::uint32_t {
-    const auto head = m_global_head.load(std::memory_order_relaxed);
-    const auto tail = m_global_tail.load(std::memory_order_relaxed);
-    const auto queued_work_count = diff(head, tail);
-    return queued_work_count > 0 ? static_cast<std::uint32_t>(queued_work_count) : 0;
+    std::uint32_t num_queued_work = 0;
+    if (!m_global_queue.empty()) {
+        ++num_queued_work;
+    }
+
+	for (std::uint32_t i = 0; i < m_thread_count; ++i) {
+		if (m_thread_states[i].approx_has_queued_work()) {
+		    ++num_queued_work;
+		}
+	}
+
+	return num_queued_work;
+}
+
+auto thread_pool::is_shutdown() const noexcept -> bool {
+    return m_stop.load(std::memory_order_relaxed);
 }
 
 auto thread_pool::notify_intent_to_sleep(std::uint32_t thread_id) noexcept -> void {
-    m_thread_states[thread_id].notify_intent_to_sleep();
-    // Then publish the fact that a thread is asleep by incrementing the count
-    // of threads that are asleep.
-    m_sleep_thread_count.fetch_add(1, std::memory_order_seq_cst);
+	// First mark the thread as asleep
+	m_thread_states[thread_id].notify_intent_to_sleep();
+
+	// Then publish the fact that a thread is asleep by incrementing the count
+	// of threads that are asleep.
+	m_sleep_thread_count.fetch_add(1, std::memory_order_seq_cst);
 }
 
 auto thread_pool::try_clear_intent_to_sleep(std::uint32_t thread_id) noexcept -> void {
-    std::uint32_t old_sleeping_count = m_sleep_thread_count.load(std::memory_order_relaxed);
-    do {
-        if (old_sleeping_count == 0) {
-            // No more sleeping threads.
-            // Someone must have woken us up.
-            return;
-        }
-    } while (!m_sleep_thread_count.compare_exchange_weak(
-        old_sleeping_count,
-        old_sleeping_count - 1,
-        std::memory_order_acquire,
-        std::memory_order_relaxed));
+	// First try to claim that we are waking up one of the threads.
+	std::uint32_t old_sleeping_count = m_sleep_thread_count.load(std::memory_order_relaxed);
+	do {
+		if (old_sleeping_count == 0) {
+			// No more sleeping threads.
+			// Someone must have woken us up.
+			return;
+		}
+	} while (!m_sleep_thread_count.compare_exchange_weak(
+		old_sleeping_count,
+		old_sleeping_count - 1,
+		std::memory_order_acquire,
+		std::memory_order_relaxed));
 
-    // Then preferentially try to wake up our thread.
-    // If some other thread has already requested that this thread wake up
-    // then we will wake up another thread - the one that should have been woken
-    // up by the thread that woke this thread up.
-    if (!m_thread_states[thread_id].try_wakeup()) {
-        for (auto i = 0u; i < m_thread_count; ++i) {
-            if (i == thread_id) {
-                continue;
-            }
-            if (m_thread_states[i].try_wakeup()) {
-                return;
-            }
-        }
-    }
+	// Then preferentially try to wake up our thread.
+	// If some other thread has already requested that this thread wake up
+	// then we will wake up another thread - the one that should have been woken
+	// up by the thread that woke this thread up.
+	if (!m_thread_states[thread_id].try_wakeup()) {
+		for (std::uint32_t i = 0; i < m_thread_count; ++i) {
+			if (i == thread_id) {
+			    continue;
+			}
+			if (m_thread_states[i].try_wakeup()) {
+				return;
+			}
+		}
+	}
 }
 
-auto thread_pool::try_steal(std::uint32_t cur_thread_id) noexcept -> schedule_operation* {
-    for (auto i = 0u; i < m_thread_count; ++i) {
-        if (i == cur_thread_id) {
-            continue;
-        }
-        auto& other_thread_state = m_thread_states[i];
-        auto* op = other_thread_state.try_steal();
-        if (op != nullptr) {
-            return op;
-        }
-    }
-    return nullptr;
+auto thread_pool::try_steal(std::uint32_t cur_thread_id) const noexcept -> schedule_operation* {
+	// Try first with non-blocking steal attempts.
+
+	bool any_locks_unavailable = false;
+	for (std::uint32_t i = 0; i < m_thread_count; ++i) {
+		if (i == cur_thread_id) {
+		    continue;
+		}
+		auto* op = m_thread_states[i].try_steal(&any_locks_unavailable);
+		if (op != nullptr) {
+			return op;
+		}
+	}
+
+	if (any_locks_unavailable) {
+		// We didn't check all of the other threads for work to steal yet.
+		// Try again, this time waiting to acquire the locks.
+		for (std::uint32_t i = 0; i < m_thread_count; ++i) {
+			if (i == cur_thread_id) {
+			    continue;
+			}
+			auto* op = m_thread_states[i].try_steal();
+			if (op != nullptr) {
+				return op;
+			}
+		}
+	}
+
+	return nullptr;
 }
 
 auto thread_pool::wake_threads(std::uint32_t num_threads) noexcept -> void {
-    // 尽可能地唤醒指定数量的线程
-    while (num_threads > 0 && m_sleep_thread_count.load(std::memory_order_acquire) > 0) {
-        std::uint32_t old_sleep_count = m_sleep_thread_count.load(std::memory_order_acquire);
+    assert(num_threads > 0);
+
+    std::uint32_t num_to_wake = num_threads;
+    std::uint32_t old_sleep_count = m_sleep_thread_count.load(std::memory_order_seq_cst);
+
+    do {
         if (old_sleep_count == 0) {
-            // 没有更多的线程可以唤醒
-            break;
+            // No sleeping threads to wake up
+            return;
         }
-        // 尝试减少睡眠线程计数
-        if (m_sleep_thread_count.compare_exchange_weak(
-            old_sleep_count,
-            old_sleep_count - 1,
-            std::memory_order_release,
-            std::memory_order_relaxed)) {
-            // 成功减少睡眠线程计数，唤醒一个线程
-            for (std::uint32_t i = 0; i < m_thread_count; ++i) {
-                if (m_thread_states[i].try_wakeup()) {
-                    break;
+        // Adjust the number of threads to wake if fewer are sleeping
+        if (old_sleep_count < num_to_wake) {
+            num_to_wake = old_sleep_count;
+        }
+    } while (!m_sleep_thread_count.compare_exchange_weak(
+        old_sleep_count,
+        old_sleep_count - num_to_wake,
+        std::memory_order_acquire,
+        std::memory_order_relaxed));
+
+    // Wake up the calculated number of threads
+    std::uint32_t woken = 0;
+    while (true) {
+        for (std::uint32_t i = 0; i < m_thread_count; ++i) {
+            if (m_thread_states[i].try_wakeup()) {
+                ++woken;
+                if (woken >= num_to_wake) {
+                    return;
                 }
             }
-            --num_threads;
+        }
+        if (is_shutdown() || m_sleep_thread_count.load(std::memory_order_relaxed) == 0) {
+            return;
         }
     }
 }

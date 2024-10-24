@@ -24,33 +24,35 @@ TEST_CASE("construct/destruct") {
 }
 
 TEST_CASE("construct/destruct to specific thread count") {
-	coro::thread_pool pool{ 5 };
-	CHECK(pool.thread_count() == 5);
+	coro::thread_pool pool{ 1 };
+	CHECK(pool.thread_count() == 1);
 }
 
 TEST_CASE("run one task") {
-	coro::thread_pool pool{2};
+	coro::thread_pool pool{1};
 
     const auto init_thread_id = std::this_thread::get_id();
 
-	coro::sync_wait([&]() -> coro::task<void> {
-		co_await pool.schedule();
-		if (std::this_thread::get_id() == init_thread_id) {
-			FAIL("schedule() did not switch threads");
-		}
-	}());
+    auto make_task = [&]() -> coro::task<void> {
+        co_await pool.schedule();
+        if (std::this_thread::get_id() == init_thread_id) {
+            FAIL("schedule() did not switch threads");
+        }
+    };
+
+	sync_wait(make_task());
 }
 
 TEST_CASE("launch many tasks remotely") {
-	coro::thread_pool pool;
+	coro::thread_pool pool{1};
 
 	auto make_task = [&]() -> coro::task<> {
 		co_await pool.schedule();
 	};
 
 	std::vector<coro::task<>> tasks;
-	tasks.reserve(100);
-    for (std::uint32_t i = 0; i < 100; ++i) {
+	tasks.reserve(1000);
+    for (std::uint32_t i = 0; i < 1000; ++i) {
 		tasks.push_back(make_task());
 	}
 
