@@ -133,7 +133,7 @@ public:
 
     bool await_ready() const noexcept { return false; }
     void await_suspend(std::coroutine_handle<> awaiter) noexcept;
-    void await_resume() const noexcept;
+    void await_resume() const noexcept {}
 
 private:
     friend class io_service;

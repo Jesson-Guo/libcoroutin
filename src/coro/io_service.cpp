@@ -152,10 +152,5 @@ bool coro::io_service::try_process_one_event(bool wait_for_event) {
 
 void coro::io_service::schedule_operation::await_suspend(std::coroutine_handle<> awaiter) noexcept {
     m_awaiter = awaiter;
-    m_service.notify_work_started();
     m_service.schedule_impl(this);
-}
-
-void coro::io_service::schedule_operation::await_resume() const noexcept {
-    m_service.notify_work_finished();
 }
