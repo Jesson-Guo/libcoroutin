@@ -39,8 +39,7 @@ ip_endpoint sockaddr_to_ip_endpoint(const sockaddr& address) noexcept;
 ///
 /// \return
 /// The length of the sockaddr structure that was populated.
-int ip_endpoint_to_sockaddr(
-    const ip_endpoint& end_point, std::reference_wrapper<sockaddr_storage> address) noexcept;
+int ip_endpoint_to_sockaddr(const ip_endpoint& end_point, std::reference_wrapper<sockaddr_storage> address) noexcept;
 
 }
 

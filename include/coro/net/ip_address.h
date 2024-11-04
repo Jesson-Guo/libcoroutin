@@ -17,9 +17,9 @@ namespace coro::net {
 class ip_address {
 public:
 	// Constructs to IPv4 address 0.0.0.0
-    ip_address() noexcept : m_family(family::ipv4) {}
-    explicit ip_address(ipv4_address address) noexcept : m_family(family::ipv4) , m_ipv4(address) {}
-    explicit ip_address(ipv6_address address) noexcept : m_family(family::ipv6) , m_ipv6(address) {}
+    ip_address() noexcept : m_family(family::ipv4), m_ipv4() {}
+    ip_address(ipv4_address address) noexcept : m_family(family::ipv4) , m_ipv4(address) {}
+    ip_address(ipv6_address address) noexcept : m_family(family::ipv6) , m_ipv6(address) {}
 
 	bool is_ipv4() const noexcept { return m_family == family::ipv4; }
 	bool is_ipv6() const noexcept { return m_family == family::ipv6; }
@@ -100,6 +100,5 @@ private:
 };
 
 }
-
 
 #endif //IP_ADDRESS_H

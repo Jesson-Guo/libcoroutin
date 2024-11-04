@@ -19,18 +19,19 @@ public:
 		: m_socket(socket)
 		, m_remote_endpoint(remote_endpoint) {}
 
-	bool try_start(detail::io_operation_base& operation) const noexcept;
+	bool try_start(detail::io_operation_base& operation) noexcept;
 	void cancel(detail::io_operation_base& operation) noexcept;
-	void get_result(detail::io_operation_base& operation) const;
+	void get_result(detail::io_operation_base& operation);
 
 private:
 	socket& m_socket;
+    sockaddr_storage m_remote_sockaddr_storage;
 	ip_endpoint m_remote_endpoint;
 };
 
-class socket_connect_operation : public coro::detail::io_operation<socket_connect_operation> {
+class socket_connect_operation : public detail::io_operation<socket_connect_operation> {
 public:
-	socket_connect_operation(coro::detail::macos::io_queue &io_queue, socket& socket, const ip_endpoint& remote_endpoint) noexcept
+	socket_connect_operation(detail::macos::io_queue &io_queue, socket& socket, const ip_endpoint& remote_endpoint) noexcept
         : io_operation {io_queue}
 		, m_connect_op_impl(socket, remote_endpoint) {}
 
@@ -43,10 +44,10 @@ private:
 	socket_connect_operation_impl m_connect_op_impl;
 };
 
-class socket_connect_operation_cancellable : public coro::detail::io_operation_cancellable<socket_connect_operation_cancellable> {
+class socket_connect_operation_cancellable : public detail::io_operation_cancellable<socket_connect_operation_cancellable> {
 public:
 	socket_connect_operation_cancellable(
-	    coro::detail::macos::io_queue &io_queue, socket& socket, const ip_endpoint& remote_endpoint, cancellation_token&& ct) noexcept
+	    detail::macos::io_queue &io_queue, socket& socket, const ip_endpoint& remote_endpoint, cancellation_token&& ct) noexcept
 		: io_operation_cancellable {io_queue, std::move(ct)}
 		, m_connect_op_impl(socket, remote_endpoint) {}
 

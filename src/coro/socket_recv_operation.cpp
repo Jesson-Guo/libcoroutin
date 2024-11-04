@@ -6,14 +6,13 @@
 #include "../../include/coro/net/socket.h"
 
 bool coro::net::socket_recv_operation_impl::try_start(coro::detail::io_operation_base& operation) const noexcept {
-    return operation.m_io_queue.transaction(operation.m_message)
+    return operation.m_io_queue.transaction(&operation.m_message)
         .read(m_socket.native_handle(), m_buffer, m_byte_count)
         .commit();
 }
 
 void coro::net::socket_recv_operation_impl::cancel(coro::detail::io_operation_base& operation) noexcept {
-    // TODO 取消事件的方法可能需要特殊处理
-    operation.m_io_queue.transaction(operation.m_message).cancel().commit();
+    operation.m_io_queue.transaction(&operation.m_message).cancel().commit();
 }
 
 std::size_t coro::net::socket_recv_operation_impl::get_result(coro::detail::io_operation_base& operation) const {

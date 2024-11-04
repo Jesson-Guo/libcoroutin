@@ -24,12 +24,26 @@ public:
         // 初始化存储发送方地址的结构体
         std::memset(&m_source_storage, 0, sizeof(m_source_storage));
         m_source_addr_len = sizeof(m_source_storage);
+
+        // Initialize iovec
+        std::memset(&m_iov, 0, sizeof(m_iov));
+        m_iov.iov_base = m_buffer;
+        m_iov.iov_len = m_byte_count;
+
+        // Initialize msghdr
+        std::memset(&m_msg_hdr, 0, sizeof(m_msg_hdr));
+        m_msg_hdr.msg_name = &m_source_storage;
+        m_msg_hdr.msg_namelen = m_source_addr_len;
+        m_msg_hdr.msg_iov = &m_iov;
+        m_msg_hdr.msg_iovlen = 1;
+        m_msg_hdr.msg_control = nullptr;
+        m_msg_hdr.msg_controllen = 0;
+        m_msg_hdr.msg_flags = 0;
     }
 
     bool try_start(coro::detail::io_operation_base& operation) noexcept;
     void cancel(coro::detail::io_operation_base& operation) noexcept;
-    std::tuple<std::size_t, ip_endpoint>
-    get_result(coro::detail::io_operation_base& operation);
+    std::tuple<std::size_t, ip_endpoint> get_result(coro::detail::io_operation_base& operation);
 
 private:
     socket& m_socket;
@@ -37,6 +51,8 @@ private:
     std::size_t m_byte_count;
     sockaddr_storage m_source_storage;
     socklen_t m_source_addr_len;
+    msghdr m_msg_hdr;
+    iovec m_iov;
 };
 
 class socket_recv_from_operation : public coro::detail::io_operation<socket_recv_from_operation> {

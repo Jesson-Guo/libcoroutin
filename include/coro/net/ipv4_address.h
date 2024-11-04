@@ -31,7 +31,7 @@ public:
 		: m_bytes{ bytes[0], bytes[1], bytes[2], bytes[3] } {}
 
 	explicit constexpr ipv4_address(
-		const std::uint8_t b0, const std::uint8_t b1, const std::uint8_t b2, const std::uint8_t b3)
+		std::uint8_t b0, std::uint8_t b1, std::uint8_t b2, std::uint8_t b3)
 		: m_bytes{ b0, b1, b2, b3 } {}
 
 	constexpr const bytes_t& bytes() const { return m_bytes; }
