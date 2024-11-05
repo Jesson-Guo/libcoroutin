@@ -90,6 +90,7 @@ public:
 
 private:
 	friend class schedule_operation;
+	friend class timed_schedule_operation;
 
 	void schedule_impl(schedule_operation* operation) noexcept;
 
@@ -125,7 +126,7 @@ private:
 
 class io_service::schedule_operation {
 public:
-    explicit schedule_operation(io_service& service) noexcept
+    schedule_operation(io_service& service) noexcept
         : m_service(service)
         , m_next(nullptr) {
         m_message = new detail::macos::io_message{};
@@ -144,41 +145,91 @@ private:
     detail::macos::io_message* m_message;
 };
 
-class io_work_scope {
+class io_service::timed_schedule_operation {
 public:
-	explicit io_work_scope(io_service& service) noexcept : m_service(&service) {
-		service.notify_work_started();
-	}
+    timed_schedule_operation(io_service& service, std::chrono::high_resolution_clock::time_point resume, cancellation_token ct) noexcept
+        : m_schedule_operation(service)
+        , m_resume_time(resume)
+        , m_cancellation_token(std::move(ct))
+        , m_ref_count(2) {
+        m_cancellation_registration.emplace(
+            std::move(m_cancellation_token),
+            [&service, this] {
+                service.io_queue().transaction(m_message).timeout_remove().commit();
+        });
+    }
 
-	io_work_scope(const io_work_scope& other) noexcept : m_service(other.m_service) {
-		if (m_service != nullptr) {
-			m_service->notify_work_started();
-		}
-	}
+    timed_schedule_operation(timed_schedule_operation&& other) noexcept
+        : m_schedule_operation(other.m_schedule_operation)
+        , m_resume_time(other.m_resume_time)
+        , m_cancellation_token(std::move(other.m_cancellation_token))
+        , m_ref_count(2) {}
 
-	io_work_scope(io_work_scope&& other) noexcept : m_service(other.m_service) {
-		other.m_service = nullptr;
-	}
+    ~timed_schedule_operation() = default;
 
-	~io_work_scope() {
-		if (m_service != nullptr) {
-			m_service->notify_work_finished();
-		}
-	}
+    timed_schedule_operation& operator=(timed_schedule_operation&& other) = delete;
+    timed_schedule_operation(const timed_schedule_operation& other) = delete;
+    timed_schedule_operation& operator=(const timed_schedule_operation& other) = delete;
 
-	io_work_scope& operator=(io_work_scope other) noexcept {
-	    std::swap(m_service, other.m_service);
-		return *this;
-	}
-
-	io_service& service() noexcept {
-		return *m_service;
-	}
+    bool await_ready() const noexcept;
+    void await_suspend(std::coroutine_handle<> awaiter);
+    void await_resume();
 
 private:
-	io_service* m_service;
+    schedule_operation m_schedule_operation;
+    std::chrono::high_resolution_clock::time_point m_resume_time;
+    cancellation_token m_cancellation_token;
+    std::optional<cancellation_registration> m_cancellation_registration;
+    timed_schedule_operation* m_next;
+    detail::macos::io_message* m_message;
+    std::atomic<std::uint32_t> m_ref_count;
 };
 
+class io_work_scope {
+public:
+    explicit io_work_scope(io_service& service) noexcept : m_service(&service) {
+        service.notify_work_started();
+    }
+
+    io_work_scope(const io_work_scope& other) noexcept : m_service(other.m_service) {
+        if (m_service != nullptr) {
+            m_service->notify_work_started();
+        }
+    }
+
+    io_work_scope(io_work_scope&& other) noexcept : m_service(other.m_service) {
+        other.m_service = nullptr;
+    }
+
+    ~io_work_scope() {
+        if (m_service != nullptr) {
+            m_service->notify_work_finished();
+        }
+    }
+
+    io_work_scope& operator=(io_work_scope other) noexcept {
+        std::swap(m_service, other.m_service);
+        return *this;
+    }
+
+    io_service& service() noexcept {
+        return *m_service;
+    }
+
+private:
+    io_service* m_service;
+};
+
+}
+
+template<typename REP, typename RATIO>
+coro::io_service::timed_schedule_operation
+coro::io_service::schedule_after(const std::chrono::duration<REP, RATIO>& delay, cancellation_token ct) noexcept {
+    return timed_schedule_operation{
+        *this,
+        std::chrono::high_resolution_clock::now() + delay,
+        std::move(ct)
+    };
 }
 
 #endif // IO_SERVICE_H

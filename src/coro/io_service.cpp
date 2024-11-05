@@ -154,3 +154,57 @@ void coro::io_service::schedule_operation::await_suspend(std::coroutine_handle<>
     m_awaiter = awaiter;
     m_service.schedule_impl(this);
 }
+
+bool coro::io_service::timed_schedule_operation::await_ready() const noexcept {
+    return m_cancellation_token.is_cancellation_requested();
+}
+
+void coro::io_service::timed_schedule_operation::await_suspend(std::coroutine_handle<> awaiter) {
+    m_schedule_operation.m_awaiter = awaiter;
+    auto& service = m_schedule_operation.m_service;
+
+    // Compute the duration until m_resume_time
+    auto now = std::chrono::high_resolution_clock::now();
+    auto duration = m_resume_time - now;
+    if (duration.count() < 0) {
+        duration = std::chrono::nanoseconds(0);
+    }
+
+    // Convert duration to timespec
+    timespec ts{};
+    ts.tv_sec = std::chrono::duration_cast<std::chrono::seconds>(duration).count();
+    ts.tv_nsec = (duration - std::chrono::seconds(ts.tv_sec)).count();
+
+    // Initialize the io_message if not already done
+    if (!m_message) {
+        m_message = new detail::macos::io_message{};
+    }
+
+    // Set the coroutine handle and timeout value
+    m_message->handle = awaiter;
+    m_message->timeout = ts;
+
+    // Submit the timeout task to the io_queue
+    while (!service.io_queue().transaction(m_message).timeout(ts).commit()) {
+        // If submission fails, handle the failure, assume it always succeeds.
+        std::this_thread::yield();
+    }
+
+    // Decrement the ref count and schedule the nop task if needed
+    if (m_ref_count.fetch_sub(1, std::memory_order_acquire) == 1) {
+        service.schedule_impl(&m_schedule_operation);
+    }
+}
+
+void coro::io_service::timed_schedule_operation::await_resume() {
+    m_cancellation_registration.reset();
+    m_cancellation_token.throw_if_cancellation_requested();
+    if (m_message->result == -ETIME) {
+    }
+    else if (m_message->result == -ECANCELED) {
+        throw operation_cancelled{};
+    }
+    else if (m_message->result < 0) {
+        throw std::system_error {static_cast<int>(-m_message->result), std::generic_category()};
+    }
+}
