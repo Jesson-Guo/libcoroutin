@@ -9,13 +9,13 @@
 #include <exception>
 #include <future>
 
-namespace coro
-{
+namespace coro {
+
 template<typename T>
 class async_generator;
 
-namespace detail
-{
+namespace detail {
+
 template<typename T>
 class async_generator_iterator;
 class async_generator_yield_operation;

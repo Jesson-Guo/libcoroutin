@@ -38,6 +38,7 @@ enum class io_operation_type {
     ACCEPT,
     CLOSE,
     TIMEOUT,
+    TIMEOUT_REMOVE,
     NOP,
     CANCEL
 };
@@ -52,7 +53,8 @@ struct io_message {
     msghdr* msg = nullptr;
     int flags = 0;
     timespec timeout{};
-    bool canceled = false;
+    std::atomic<bool> canceled = false;
+    std::atomic<bool> completed = false;
     io_operation_type operation = io_operation_type::NONE;
     std::error_code ec;
 };
@@ -109,13 +111,13 @@ public:
     [[nodiscard]] io_transaction& recv(int fd, void* buffer, size_t size = 0, int flags = 0) noexcept;
     [[nodiscard]] io_transaction& send(int fd, const void* buffer, size_t size = 0, int flags = 0) noexcept;
 
-    [[nodiscard]] io_transaction& recvmsg(int fd, msghdr *msg = nullptr, int flags = 0) noexcept;
-    [[nodiscard]] io_transaction& sendmsg(int fd, msghdr *msg = nullptr, int flags = 0) noexcept;
+    [[nodiscard]] io_transaction& recvmsg(int fd, msghdr* msg = nullptr, int flags = 0) noexcept;
+    [[nodiscard]] io_transaction& sendmsg(int fd, msghdr* msg = nullptr, int flags = 0) noexcept;
 
-    [[nodiscard]] io_transaction& connect(int fd, const void* addr, socklen_t addrlen) noexcept;
-    [[nodiscard]] io_transaction& accept(int fd, const void* addr, socklen_t addrlen) noexcept;
+    [[nodiscard]] io_transaction& connect(int fd, sockaddr* addr, socklen_t addrlen) noexcept;
+    [[nodiscard]] io_transaction& accept(int fd, sockaddr* addr, socklen_t addrlen) noexcept;
     [[nodiscard]] io_transaction& close(int fd) noexcept;
-    [[nodiscard]] io_transaction& timeout(const timespec &ts) noexcept;
+    [[nodiscard]] io_transaction& timeout(const timespec& ts, bool absolute = false) noexcept;
     [[nodiscard]] io_transaction& timeout_remove() noexcept;
     [[nodiscard]] io_transaction& nop() noexcept;
     [[nodiscard]] io_transaction& cancel() noexcept;
@@ -145,6 +147,8 @@ public:
 private:
     int io_wait_cq(io_message*& msg);
     int io_peek_cq(io_message*& msg);
+
+    void enqueue(io_message* msg);
 
     int m_kqueue_fd;
     std::mutex m_kq_mutex;
@@ -236,25 +240,17 @@ inline io_transaction& io_transaction::sendmsg(int fd, msghdr* msg, int flags) n
     return *this;
 }
 
-inline io_transaction& io_transaction::connect(int fd, const void* addr, socklen_t addrlen) noexcept {
+inline io_transaction& io_transaction::connect(int fd, sockaddr* addr, socklen_t addrlen) noexcept {
     m_message->fd = fd;
-    m_message->buffer = const_cast<void*>(addr);
+    m_message->buffer = addr;
     m_message->size = addrlen;
     m_message->operation = io_operation_type::CONNECT;
-
-    // 非阻塞连接
-    int flags = fcntl(fd, F_GETFL, 0);
-    fcntl(fd, F_SETFL, flags | O_NONBLOCK);
-    int ret = ::connect(fd, static_cast<sockaddr*>(const_cast<void*>(addr)), addrlen);
-    if (ret == -1 && errno != EINPROGRESS) {
-        m_message->result = -1;
-    }
     return *this;
 }
 
-inline io_transaction& io_transaction::accept(int fd, const void* addr, socklen_t addrlen) noexcept {
+inline io_transaction& io_transaction::accept(int fd, sockaddr* addr, socklen_t addrlen) noexcept {
     m_message->fd = fd;
-    m_message->buffer = const_cast<void*>(addr);
+    m_message->buffer = addr;
     m_message->size = addrlen;
     m_message->operation = io_operation_type::ACCEPT;
     return *this;
@@ -266,15 +262,17 @@ inline io_transaction& io_transaction::close(int fd) noexcept {
     return *this;
 }
 
-inline io_transaction& io_transaction::timeout(const timespec &ts) noexcept {
+inline io_transaction& io_transaction::timeout(const timespec& ts, bool absolute) noexcept {
     m_message->timeout = ts;
     m_message->operation = io_operation_type::TIMEOUT;
+    m_message->flags = absolute ? NOTE_ABSOLUTE : 0;
     return *this;
 }
 
 inline io_transaction& io_transaction::timeout_remove() noexcept {
     if (m_message->operation == io_operation_type::TIMEOUT) {
-        m_message->canceled = true;
+        m_message->operation = io_operation_type::TIMEOUT_REMOVE;
+        m_message->canceled.store(true);
     }
     return *this;
 }
@@ -326,15 +324,15 @@ inline message_queue::~message_queue() noexcept {
         kevent(m_kqueue_fd, &ev, 1, nullptr, 0, nullptr);
     }
 
-    if (m_kqueue_fd != -1) {
-        close(m_kqueue_fd);
-        m_kqueue_fd = -1;
-    }
-
     for (auto& thread : m_worker_threads) {
         if (thread.joinable()) {
             thread.join();
         }
+    }
+
+    if (m_kqueue_fd != -1) {
+        close(m_kqueue_fd);
+        m_kqueue_fd = -1;
     }
 }
 
@@ -392,6 +390,16 @@ inline int message_queue::io_peek_cq(io_message*& msg) {
     return -EAGAIN;
 }
 
+inline void message_queue::enqueue(io_message* msg) {
+    while (!m_completion_queue.push(msg)) {
+        std::this_thread::yield();
+    }
+    {
+        std::lock_guard lock(m_cqe_mutex);
+        m_cqe_cv.notify_one();
+    }
+}
+
 inline void message_queue::worker_thread_func() {
     while (!m_stop) {
         io_message* submit_msg = nullptr;
@@ -402,12 +410,11 @@ inline void message_queue::worker_thread_func() {
         // Wait for events
         struct kevent events[64];
         timespec timeout = {0, 1000000}; // Wait for 1 millisecond
-        // int nev;
-        // {
-        //     std::lock_guard lock(m_kq_mutex);
-        //     nev = kevent(m_kqueue_fd, nullptr, 0, events, 64, &timeout);
-        // }
-        int nev = kevent(m_kqueue_fd, nullptr, 0, events, 64, &timeout);
+        int nev;
+        {
+            std::lock_guard lock(m_kq_mutex);
+            nev = kevent(m_kqueue_fd, nullptr, 0, events, 64, &timeout);
+        }
         if (nev > 0) {
             for (int i = 0; i < nev; ++i) {
                 struct kevent& event = events[i];
@@ -416,10 +423,6 @@ inline void message_queue::worker_thread_func() {
                     continue;
                 }
                 process_one(event);
-                {
-                    std::lock_guard lock(m_cqe_mutex);
-                    m_cqe_cv.notify_one();
-                }
             }
         }
         else if (nev == -1) {
@@ -436,33 +439,35 @@ inline void message_queue::worker_thread_func() {
         }
     }
 
+    // Process remaining submissions before exiting
+    io_message* submit_msg = nullptr;
+    while (m_submission_queue.pop(submit_msg)) {
+        event_set(submit_msg);
+    }
+
     // Process remaining events before exiting
     while (true) {
         struct kevent events[64];
-        // int nev;
-        // {
-        //     std::lock_guard lock(m_kq_mutex);
-        //     nev = kevent(m_kqueue_fd, nullptr, 0, events, 64, nullptr);
-        // }
-        int nev = kevent(m_kqueue_fd, nullptr, 0, events, 64, nullptr);
+        timespec timeout = {0, 0};  // Non-blocking timeout
+        int nev;
+        {
+            std::lock_guard lock(m_kq_mutex);
+            nev = kevent(m_kqueue_fd, nullptr, 0, events, 64, &timeout);
+        }
         if (nev <= 0) {
             break;
         }
         for (int i = 0; i < nev; ++i) {
             struct kevent& event = events[i];
             process_one(event);
-            {
-                std::lock_guard lock(m_cqe_mutex);
-                m_cqe_cv.notify_one();
-            }
         }
     }
 }
 
 inline void message_queue::event_set(io_message* msg) {
     bool is_register = true;
+
     struct kevent kev{};
-    // Set up the kevent structure based on the operation
     switch (msg->operation) {
     case io_operation_type::READ:
     case io_operation_type::PREAD:
@@ -475,72 +480,110 @@ inline void message_queue::event_set(io_message* msg) {
     case io_operation_type::PWRITE:
     case io_operation_type::SEND:
     case io_operation_type::SENDMSG:
-    case io_operation_type::CONNECT:
         EV_SET(&kev, msg->fd, EVFILT_WRITE, EV_ADD | EV_ONESHOT, 0, 0, msg);
         break;
-    case io_operation_type::CLOSE: {
-        // TODO
-        int ret = close(msg->fd);
-        msg->result = ret;
+    case io_operation_type::CONNECT: {
+        // Attempt to initiate connect
+        int ret = ::connect(msg->fd, static_cast<sockaddr*>(msg->buffer), static_cast<socklen_t>(msg->size));
+        if (ret == 0) {
+            // Connect succeeded immediately
+            msg->result = 0;
+            is_register = false;
+            enqueue(msg);
+        }
+        else {
+            if (errno == EINPROGRESS) {
+                // Connection in progress, register for write event
+                EV_SET(&kev, msg->fd, EVFILT_WRITE, EV_ADD | EV_ONESHOT, 0, 0, msg);
+            }
+            else {
+                // Connect failed
+                int err = errno;
+                msg->result = -1;
+                msg->ec = std::error_code(errno, std::generic_category());
+                is_register = false;
+                enqueue(msg);
+            }
+        }
+        break;
     }
+    case io_operation_type::CLOSE: {
+        int ret = ::close(msg->fd);
+        if (ret == -1) {
+            msg->result = -1;
+            msg->ec = std::error_code(errno, std::generic_category());
+        }
+        else {
+            msg->result = 0;
+        }
+        is_register = false;
+        enqueue(msg);
         break;
-    case io_operation_type::TIMEOUT:
-        EV_SET(&kev, 0, EVFILT_TIMER, EV_ADD | EV_ONESHOT, 0, msg->timeout.tv_sec * 1000 + msg->timeout.tv_nsec / 1000000, msg);
+    }
+    case io_operation_type::TIMEOUT: {
+        uint16_t fflags = msg->flags;
+        EV_SET(&kev, reinterpret_cast<uintptr_t>(msg), EVFILT_TIMER, EV_ADD | EV_ONESHOT, fflags,
+               msg->timeout.tv_sec * 1000 + msg->timeout.tv_nsec / 1000000, msg);
         break;
+    }
+    case io_operation_type::TIMEOUT_REMOVE: {
+        EV_SET(&kev, reinterpret_cast<uintptr_t>(msg), EVFILT_TIMER, EV_DELETE, 0, 0, nullptr);
+        std::lock_guard lock(m_kq_mutex);
+        int res = kevent(m_kqueue_fd, &kev, 1, nullptr, 0, nullptr);
+        if (res == -1 && errno != ENOENT) {
+            msg->result = -1;
+            msg->ec = std::error_code(errno, std::generic_category());
+        }
+        else {
+            bool expected = false;
+            if (msg->completed.compare_exchange_strong(expected, true)) {
+                msg->result = -ECANCELED;
+                msg->ec = std::error_code(ECANCELED, std::generic_category());
+                enqueue(msg);
+            }
+        }
+        is_register = false; // No need to register event
+        break;
+    }
     case io_operation_type::NOP:
         msg->result = 0;
         is_register = false;
-        while (!m_completion_queue.push(msg)) {
-            std::this_thread::yield();
-        }
-        {
-            std::lock_guard lock(m_cqe_mutex);
-            m_cqe_cv.notify_one();
-        }
+        enqueue(msg);
         break;
-    case io_operation_type::CANCEL:
-        // Remove specified event from kqueue
-        struct kevent ev[2];
-        EV_SET(&ev[0], msg->fd, EVFILT_READ, EV_DELETE, 0, 0, nullptr);
-        EV_SET(&ev[1], msg->fd, EVFILT_WRITE, EV_DELETE, 0, 0, nullptr);
-        kevent(m_kqueue_fd, ev, 2, nullptr, 0, nullptr);
-        // Mark operation as canceled
-        msg->result = -1;
+    case io_operation_type::CANCEL: {
+        std::lock_guard lock(m_kq_mutex);
+
+        // Attempt to delete EVFILT_READ event
+        EV_SET(&kev, msg->fd, EVFILT_READ, EV_DELETE, 0, 0, msg);
+        kevent(m_kqueue_fd, &kev, 1, nullptr, 0, nullptr);
+        // No need to check for errors unless you want to log them
+
+        // Attempt to delete EVFILT_WRITE event
+        EV_SET(&kev, msg->fd, EVFILT_WRITE, EV_DELETE, 0, 0, msg);
+        kevent(m_kqueue_fd, &kev, 1, nullptr, 0, nullptr);
+        // Again, errors can be ignored for ENOENT
+
+        // Mark the target message as canceled
+        msg->result = -ECANCELED;
+        is_register = false;
+        enqueue(msg);
         break;
+    }
     default:
         // Unsupported operation
         msg->result = -1;
         msg->ec = std::make_error_code(std::errc::function_not_supported);
         is_register = false;
-        while (!m_completion_queue.push(msg)) {
-            std::this_thread::yield();
-        }
-        {
-            std::lock_guard lock(m_cqe_mutex);
-            m_cqe_cv.notify_one();
-        }
+        enqueue(msg);
     }
 
     // Register the event
-    // {
-    //     std::lock_guard lock(m_kq_mutex);
-    //     if (is_register && kevent(m_kqueue_fd, &kev, 1, nullptr, 0, nullptr) == -1) {
-    //         msg->result = -1;
-    //         msg->ec = std::error_code(errno, std::generic_category());
-    //         while (!m_completion_queue.push(msg)) {
-    //             std::this_thread::yield();
-    //         }
-    //     }
-    // }
-    if (is_register && kevent(m_kqueue_fd, &kev, 1, nullptr, 0, nullptr) == -1) {
-        msg->result = -1;
-        msg->ec = std::error_code(errno, std::generic_category());
-        while (!m_completion_queue.push(msg)) {
-            std::this_thread::yield();
-        }
-        {
-            std::lock_guard lock(m_cqe_mutex);
-            m_cqe_cv.notify_one();
+    if (is_register) {
+        std::lock_guard lock(m_kq_mutex);
+        if (kevent(m_kqueue_fd, &kev, 1, nullptr, 0, nullptr) == -1) {
+            msg->result = -1;
+            msg->ec = std::error_code(errno, std::generic_category());
+            enqueue(msg);
         }
     }
 }
@@ -548,7 +591,7 @@ inline void message_queue::event_set(io_message* msg) {
 inline void message_queue::process_one(struct kevent& event) {
     auto* msg = static_cast<io_message*>(event.udata);
 
-    if (msg == nullptr) {
+    if (msg == nullptr || msg->canceled) {
         return;
     }
 
@@ -618,46 +661,28 @@ inline void message_queue::process_one(struct kevent& event) {
         }
         break;
     case io_operation_type::CONNECT: {
-        // Perform non-blocking connect
-        fd_set writefds;
-        FD_ZERO(&writefds);
-        FD_SET(msg->fd, &writefds);
-        timeval tv = {0};
-        int ret = select(msg->fd + 1, nullptr, &writefds, nullptr, &tv);
-        if (ret > 0 && FD_ISSET(msg->fd, &writefds)) {
-            int err = 0;
-            socklen_t len = sizeof(err);
-            if (getsockopt(msg->fd, SOL_SOCKET, SO_ERROR, &err, &len) == 0) {
-                if (err == 0) {
-                    msg->result = 0; // Success
-                }
-                else {
-                    msg->result = -1;
-                    msg->ec = std::error_code(err, std::generic_category());
-                }
-            }
-            else {
-                msg->result = -1;
-                msg->ec = std::error_code(errno, std::generic_category());
-            }
-        }
-        else if (ret == 0) {
-            // Still in progress
-            msg->result = -1;
-            msg->ec = std::error_code(EINPROGRESS, std::generic_category());
-        }
-        else {
-            // Error
+        int error = 0;
+        socklen_t len = sizeof(error);
+        if (getsockopt(msg->fd, SOL_SOCKET, SO_ERROR, &error, &len) == -1) {
+            // getsockopt failed
             msg->result = -1;
             msg->ec = std::error_code(errno, std::generic_category());
         }
-    }
+        else if (error != 0) {
+            // connect failed
+            msg->result = -1;
+            msg->ec = std::error_code(error, std::generic_category());
+        }
+        else {
+            // connect succeeded
+            msg->result = 0;
+        }
         break;
+    }
     case io_operation_type::ACCEPT: {
         // Perform accept operation
-        auto* addr = static_cast<sockaddr*>(msg->buffer);
         socklen_t addrlen = msg->size;
-        int fd = ::accept(msg->fd, addr, &addrlen);
+        int fd = ::accept(msg->fd, static_cast<sockaddr*>(msg->buffer), &addrlen);
         if (fd >= 0) {
             msg->result = fd;
         }
@@ -665,36 +690,24 @@ inline void message_queue::process_one(struct kevent& event) {
             msg->result = -1;
             msg->ec = std::error_code(errno, std::generic_category());
         }
-    }
         break;
-    case io_operation_type::CLOSE:
-        // Perform close operation
-        msg->result = ::close(msg->fd);
-        if (msg->result == -1) {
-            msg->ec = std::error_code(errno, std::generic_category());
+    }
+    case io_operation_type::TIMEOUT: {
+        if (msg->canceled.load()) {
+            msg->result = -ECANCELED;
+            msg->ec = std::error_code(ECANCELED, std::generic_category());
+        }
+        else {
+            msg->result = 0;
         }
         break;
-    case io_operation_type::TIMEOUT: {
-        // Handle timeout
-        std::this_thread::sleep_for(std::chrono::seconds(msg->timeout.tv_sec) +
-                                    std::chrono::nanoseconds(msg->timeout.tv_nsec));
-        msg->result = 0;
     }
-        break;
-    case io_operation_type::CANCEL:
-        // Handle cancel (implementation-specific)
-        msg->canceled = true;
-        msg->result = 0;
-        break;
     default:
         msg->result = -EINVAL;
         msg->ec = std::error_code(EINVAL, std::generic_category());
         break;
     }
-    while (!m_completion_queue.push(msg)) {
-        // If push fails, wait briefly
-        std::this_thread::yield();
-    }
+    enqueue(msg);
 }
 
 }

@@ -10,7 +10,10 @@ coro::async_auto_reset_event_operation coro::async_auto_reset_event::operator co
     auto waiter_count = static_cast<std::uint32_t>(old_state >> 32);
     if (set_count > waiter_count) {
         if (m_state.compare_exchange_strong(
-                old_state, old_state - 1, std::memory_order_acquire, std::memory_order_relaxed)) {
+            old_state,
+            old_state - 1,
+            std::memory_order_acquire,
+            std::memory_order_relaxed)) {
             // set_count > waiter_count, won't suspend
             return async_auto_reset_event_operation{};
         }
@@ -19,39 +22,67 @@ coro::async_auto_reset_event_operation coro::async_auto_reset_event::operator co
 }
 
 void coro::async_auto_reset_event::set() const noexcept {
-    std::uint64_t old_state = m_state.fetch_add(1, std::memory_order_acq_rel);
-    if (old_state >> 32 != 0) {
+    std::uint64_t old_state = m_state.load(std::memory_order_relaxed);
+    do {
+        auto set_count = static_cast<std::uint32_t>(old_state);
+        auto waiter_count = static_cast<std::uint32_t>(old_state >> 32);
+        if (set_count > waiter_count) {
+            // already set
+            return;
+        }
+    } while (!m_state.compare_exchange_weak(
+        old_state,
+        old_state + 1,
+        std::memory_order_acq_rel,
+        std::memory_order_acquire));
+
+    if (old_state != 0 && static_cast<std::uint32_t>(old_state) == 0) {
         resume_waiters(old_state + 1);
     }
 }
 
 void coro::async_auto_reset_event::reset() const noexcept {
     // reset the set count to zero
-    std::uint64_t state     = m_state.load(std::memory_order_acquire);
-    std::uint64_t new_state = state & 0xFFFFFFFF00000000ULL;
-    m_state.store(new_state, std::memory_order_release);
+    // std::uint64_t old_state = m_state.load(std::memory_order_acquire);
+    // std::uint64_t new_state = old_state & 0xFFFFFFFF00000000ULL;
+    // m_state.store(new_state, std::memory_order_release);
+    // std::uint64_t oldState = m_state.load(std::memory_order_relaxed);
+
+    std::uint64_t old_state = m_state.load(std::memory_order_relaxed);
+    auto set_count = static_cast<std::uint32_t>(old_state);
+    auto waiter_count = static_cast<std::uint32_t>(old_state >> 32);
+    while (set_count > waiter_count) {
+        if (m_state.compare_exchange_weak(
+            old_state,
+            old_state - 1,
+            std::memory_order_relaxed)) {
+            // successfully reset.
+            return;
+        }
+    }
 }
 
 void coro::async_auto_reset_event::resume_waiters(std::uint64_t init_state) const noexcept {
     async_auto_reset_event_operation* resume_list = nullptr;
-    async_auto_reset_event_operation** resume_list_end = nullptr;
+    async_auto_reset_event_operation** resume_list_end = &resume_list;
 
     auto waiters_resume_count = std::min(
         static_cast<std::uint32_t>(init_state),
         static_cast<std::uint32_t>(init_state >> 32));
 
     assert(waiters_resume_count > 0);
-    while (waiters_resume_count > 0) {
-        for(auto i=0; i<waiters_resume_count; ++i) {
+    do {
+        for (auto i=0; i<waiters_resume_count; ++i) {
             if (!m_waiters) {
                 auto* waiter = m_new_waiters.exchange(nullptr, std::memory_order_acquire);
+                assert(waiter != nullptr);
                 // reverse waiter order, fifo
-                while (waiter) {
+                do {
                     auto* next = waiter->m_next;
                     waiter->m_next = m_waiters;
                     m_waiters = waiter;
                     waiter = next;
-                }
+                } while (waiter);
             }
             assert(m_waiters != nullptr);
             auto* waiter_to_resume = m_waiters;
@@ -71,7 +102,7 @@ void coro::async_auto_reset_event::resume_waiters(std::uint64_t init_state) cons
         waiters_resume_count = std::min(
             static_cast<std::uint32_t>(new_state),
             static_cast<std::uint32_t>(new_state >> 32));
-    }
+    } while (waiters_resume_count > 0);
 
     assert(resume_list != nullptr);
     do {
@@ -92,22 +123,19 @@ auto coro::async_auto_reset_event_operation::await_suspend(std::coroutine_handle
     m_awaiter = awaiter;
     // add to the m_newWaiters list.
     auto* waiter = m_event->m_new_waiters.load(std::memory_order_relaxed);
-    while (true) {
+    do {
         m_next = waiter;
-        if (!m_event->m_new_waiters.compare_exchange_weak(
-            waiter,
-            this,
-            std::memory_order_release,
-            std::memory_order_relaxed)) {
-            break;
-        }
-    }
+    } while (!m_event->m_new_waiters.compare_exchange_weak(
+        waiter,
+        this,
+        std::memory_order_release,
+        std::memory_order_relaxed));
 
-    const std::uint64_t old_state = m_event->m_state.fetch_add(
-        static_cast<std::uint64_t>(1) << 32, std::memory_order_acq_rel);
+    constexpr auto waiter_increment = static_cast<std::uint64_t>(1) << 32;
+    const std::uint64_t old_state = m_event->m_state.fetch_add(waiter_increment, std::memory_order_acq_rel);
 
     if (old_state != 0 && static_cast<std::uint32_t>(old_state >> 32) == 0) {
-        m_event->resume_waiters(old_state + (static_cast<std::uint64_t>(1) << 32));
+        m_event->resume_waiters(old_state + waiter_increment);
     }
 
     return m_ref_count.fetch_sub(1, std::memory_order_acquire) != 1;

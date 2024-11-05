@@ -11,9 +11,9 @@
 
 namespace coro {
 
-template<typename awaitable_type>
-auto sync_wait(awaitable_type&& awaitable) -> typename detail::awaitable_traits<awaitable_type&&>::await_result_t {
-    auto task = detail::make_sync_wait_task(std::forward<awaitable_type>(awaitable));
+template<typename AWAITABLE>
+auto sync_wait(AWAITABLE&& awaitable) -> typename detail::awaitable_traits<AWAITABLE&&>::await_result_t {
+    auto task = detail::make_sync_wait_task(std::forward<AWAITABLE>(awaitable));
     detail::lightweight_manual_reset_event event;
     task.start(event);
     event.wait();

@@ -30,9 +30,7 @@ class task_promise_base {
             if (promise.m_handle) {
                 return promise.m_handle;
             }
-            else {
-                return std::noop_coroutine();
-            }
+            return std::noop_coroutine();
         }
 
         auto await_resume() noexcept -> void {}
@@ -239,7 +237,7 @@ public:
         return awaitable{m_handle};
     }
 
-    auto when_ready() const noexcept -> bool {
+    auto when_ready() const noexcept {
         struct awaitable : awaitable_base {
             using awaitable_base::awaitable_base;
             static auto await_resume() noexcept -> void {}

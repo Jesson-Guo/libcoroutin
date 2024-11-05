@@ -34,6 +34,7 @@ public:
 private:
 	friend class async_auto_reset_event_operation;
 
+    // TODO 使用批处理方式恢复多个等待者，减少原子操作的频繁调用。
 	void resume_waiters(std::uint64_t init_state) const noexcept;
 
 	// Bits 0-31  - set count

@@ -325,7 +325,6 @@ auto thread_pool::shutdown() -> void {
 
 auto thread_pool::schedule_impl(schedule_operation* op) noexcept -> void {
 	if (s_cur_thread_pool != this || !s_cur_state->try_local_enqueue(op)) {
-        // try_global_enqueue(op);
         while (!try_global_enqueue(op)) {
             // 如果队列满了，等待一段时间后重试
             std::this_thread::yield();

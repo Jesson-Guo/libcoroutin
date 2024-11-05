@@ -8,9 +8,12 @@ set(INC_FILES
         ${PROJECT_SOURCE_DIR}/include/coro/awaitable_traits.h
         ${PROJECT_SOURCE_DIR}/include/coro/broken_promise.h
         ${PROJECT_SOURCE_DIR}/include/coro/fmap.h
+        ${PROJECT_SOURCE_DIR}/include/coro/inline_scheduler.h
         ${PROJECT_SOURCE_DIR}/include/coro/is_awaitable.h
         ${PROJECT_SOURCE_DIR}/include/coro/on_scope_exit.h
         ${PROJECT_SOURCE_DIR}/include/coro/operation_cancelled.h
+        ${PROJECT_SOURCE_DIR}/include/coro/resume_on.h
+        ${PROJECT_SOURCE_DIR}/include/coro/schedule_on.h
         ${PROJECT_SOURCE_DIR}/include/coro/sequence_barrier.h
         ${PROJECT_SOURCE_DIR}/include/coro/sequence_range.h
         ${PROJECT_SOURCE_DIR}/include/coro/sequence_traits.h
@@ -44,6 +47,7 @@ set(DETAIL_INC_FILES
         ${PROJECT_SOURCE_DIR}/include/coro/detail/get_awaiter.h
         ${PROJECT_SOURCE_DIR}/include/coro/detail/is_awaiter.h
         ${PROJECT_SOURCE_DIR}/include/coro/detail/lightweight_manual_reset_event.h
+        ${PROJECT_SOURCE_DIR}/include/coro/detail/lock_free_queue.h
         ${PROJECT_SOURCE_DIR}/include/coro/detail/macos.h
         ${PROJECT_SOURCE_DIR}/include/coro/detail/macos_io_operation.h
         ${PROJECT_SOURCE_DIR}/include/coro/detail/manual_lifetime.h
@@ -149,7 +153,7 @@ add_library(coro STATIC ${SRC_FILES} ${HEADER_FILES})
 target_include_directories(coro PUBLIC ${PROJECT_SOURCE_DIR}/include)
 
 # 链接线程库
-target_link_libraries(coro PUBLIC Threads::Threads)
+target_link_libraries(coro PUBLIC Threads::Threads Boost::boost Boost::atomic)
 
 # 设置目标的C++标准
 set_target_properties(coro PROPERTIES CXX_STANDARD 20)
